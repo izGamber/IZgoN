@@ -1,5 +1,5 @@
 """
-IzgoN - single-file deploy build (v2 - "2045" redesign + PayPal invoice link).
+IzgoN - single-file deploy build (v1.0.0 - "2045" dashboard, offline licence).
 
 Mechanically merged from engine.py, storage.py, metrics_db.py, licensing.py
 and main.py in the canonical multi-file repo, with static assets inlined.
@@ -213,7 +213,7 @@ def real_metrics() -> dict:
 # ============================== licensing.py ==============================
 
 LICENSE_SECRET = os.environ.get("DATAPULSE_LICENSE_SECRET", "")
-FREE_TIER_SYNC_LIMIT = int(os.environ.get("DATAPULSE_FREE_TIER_LIMIT", "100"))
+FREE_TIER_SYNC_LIMIT = int(os.environ.get("DATAPULSE_FREE_TIER_LIMIT", "10000"))
 
 
 def _sign(payload_b64: str, secret: str) -> str:
@@ -266,7 +266,12 @@ ICON_512_MASKABLE = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eN
 # ============================== main.py (app) ==============================
 API_KEY = os.environ.get("DATAPULSE_API_KEY", "dev-local-key")
 LICENSE_KEY = os.environ.get("DATAPULSE_LICENSE_KEY")
-PURCHASE_URL = os.environ.get("DATAPULSE_PURCHASE_URL", "https://www.paypal.com/invoice/details/INV2-FYN4-PFCQ-V36L-G2WD")
+# Checkout link shown when the free tier is exhausted.
+# Set DATAPULSE_PURCHASE_URL to your Lemon Squeezy checkout before deploying.
+PURCHASE_URL = os.environ.get(
+    "DATAPULSE_PURCHASE_URL",
+    "https://github.com/izGamber/IZgoN#licence-and-price",
+)
 ALLOWED_ORIGINS = os.environ.get("DATAPULSE_ALLOWED_ORIGINS", "*").split(",")
 
 
@@ -276,7 +281,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="IzgoN", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

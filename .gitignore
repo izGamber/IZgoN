@@ -1,0 +1,27 @@
+# Secrets — never commit
+.env
+*.pem
+*.key
+
+# Issued licences and customer emails
+sales.log
+
+# Local data
+*.db
+*.db-journal
+*.sqlite3
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
