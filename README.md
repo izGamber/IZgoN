@@ -10,6 +10,12 @@ IzgoN sits between your fleet and your backend. Each node POSTs its current stat
    {"t":21.5,"h":60}  ──►  compare + diff  ──►  NO_CHANGE    (0 bytes)
 ```
 
+![IzgoN — 93.9% less data at a 5% change rate, measured](izgon-dashboard.png)
+
+Live demo: <https://izgon-api.onrender.com> — it runs on a free tier and goes to
+sleep, so the first request takes about 40 seconds to wake it. The clip above is
+the same dashboard, without the wait.
+
 ---
 
 ## Why not just use `jsonpatch`?
@@ -149,9 +155,23 @@ IzgoN is **source-available, not open source.** You can read, run, and modify it
 - **Free tier** — 10,000 syncs, no key needed. Enough to run the benchmark on your own payloads and decide.
 - **Commercial licence** — one-time payment, no subscription, no phone-home. The key is validated offline with HMAC-SHA256, so your instance never talks to a licence server.
 
-Buy: **[link goes here — Lemon Squeezy checkout]**
+**Start on the free tier.** 10,000 syncs is enough to run the benchmark against your
+own payloads and decide whether this is worth anything to you. No account, no card,
+no sign-up — `git clone` and `docker compose up -d`.
 
-After purchase you receive a key. Set `DATAPULSE_LICENSE_KEY` and restart.
+Checkout is being set up. Until it is live, open an issue titled `licence` and I will
+send you one; the price does not change.
+
+A licence is two values — a key and a signing secret — and both go in your `.env`:
+
+```
+DATAPULSE_LICENSE_KEY=DPC-....................=.........
+DATAPULSE_LICENSE_SECRET=<64 hex characters>
+```
+
+Restart, then check `GET /api/license` shows `"licensed": true`. The key on its own
+does nothing: validation is local HMAC-SHA256, so your server needs the secret to
+verify it and never contacts a licence server.
 
 ---
 
