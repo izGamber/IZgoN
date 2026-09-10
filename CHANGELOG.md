@@ -14,6 +14,14 @@ result.
   bytes per changed field. Both are compact now. On the standard benchmark:
   **5 % change rate 93.9 % → 94.3 %, 20 % 78.6 % → 80.5 %, 70 % 27.7 % → 35.3 %.**
   Anything published before today understates the tool rather than overstating it.
+- **The dashboard stopped updating after an upgrade.** The service worker
+  cached the HTML shell cache-first under a cache name that never changed, so
+  once a browser had seen the dashboard it kept serving that copy forever — an
+  upgraded server showed the old page, old figures and all. Found by upgrading a
+  live instance and watching it serve the previous release's numbers. The shell
+  is network-first now, cache is the offline fallback only, the cache name
+  carries the app version, and `/sw.js` is served with `Cache-Control: no-store`
+  so a browser can actually learn that the name changed.
 - **A delta is never sent when it would be bigger than the state it replaces.**
   When keys disappear, the `__deleted__` tombstones can outweigh what is left:
   `{"a":1}` is 7 bytes, and the delta that removes four sibling keys is 101. The
