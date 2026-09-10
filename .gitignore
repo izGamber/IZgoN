@@ -25,3 +25,6 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Lokalna pomocna skripta za potpisivanje, ne dio proizvoda
+potpisi-commit.ps1

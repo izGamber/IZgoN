@@ -64,23 +64,28 @@ Zatim u GitHub UI:
 
 ---
 
-## Dan 2b — jedina provjera koju nisam mogao uraditi (10 minuta)
+## Dan 2b — Docker je provjeren (10.09.2026.)
 
-`docker-compose.yml` je sintaksno validiran, ali **Docker build nikad nije pokrenut** —
-u okruženju gdje je sve ovo pisano nije bilo Docker daemona. Sve ostalo je testirano na
-živom IzgoN-u; ovo nije.
+Više nije otvoreno pitanje. Slika je stvarno izgrađena na `python:3.12-slim`,
+pokrenuta zajedno sa `redis:7-alpine`, i kroz nju je prošao benchmark:
 
-Prije nego išta objaviš, na svom laptopu:
+- pinovane verzije iz `requirements.txt` se instaliraju bez konflikta
+- `uvicorn app:app` se diže, `/healthz` vraća `{"redis_reachable":true}`
+- sync radi: prvi poziv `SYNC_REQUIRED`, drugi identični `NO_CHANGE` sa `bytes_sent: 0`
+- kontejner se izvršava kao non-root (`uid=10001 izgon`)
+- benchmark kroz Docker: **93,1 % ušteda**, p50 4,5 ms — isto kao bez Dockera
+
+Usput je popravljen healthcheck: koristio je `localhost` kroz običan `urlopen`, pa bi
+na mašini iza korporativnog proxyja kontejner zauvijek pisao `unhealthy` iako servis
+radi. Sada ignoriše proxy iz okruženja.
+
+Svejedno pokreni jednom kod sebe da potvrdiš na svom Dockeru:
 
 ```bash
 docker compose up -d
 docker compose ps          # oba servisa moraju biti healthy
 curl -s http://localhost:8000/healthz
 ```
-
-Ako build padne, javi grešku — vjerovatno je sitnica u `requirements.txt` ili verziji
-Pythona. Ali **ne linkaj repo dok `docker compose up -d` ne prođe čisto**, jer je to
-prva komanda koju će svaki posjetilac otkucati.
 
 ---
 

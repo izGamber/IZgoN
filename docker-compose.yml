@@ -29,7 +29,10 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=3).status==200 else 1)"]
+      # ProxyHandler({}) ignores any http_proxy inherited from the host — without
+      # it, a machine behind a corporate proxy reports this container unhealthy
+      # forever even though the service is fine.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; o=urllib.request.build_opener(urllib.request.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5

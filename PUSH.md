@@ -72,8 +72,17 @@ Samo četiri linije. Ništa u logici.
 - `issue_license.py` generiše ključ i piše `sales.log`
 - `app.py` se kompajlira i radi nakon izmjena
 
-**Nije testirano** — u okruženju nije bilo Docker daemona:
+**Testirano i u Dockeru** (10.09.2026) — slika izgrađena na `python:3.12-slim`,
+pokrenuta uz `redis:7-alpine`:
 
-- `docker compose up -d` (sintaksa `docker-compose.yml` jeste validirana)
+- pinovane verzije iz `requirements.txt` se instaliraju bez konflikta
+- `/healthz` vraća `{"redis_reachable":true}`, sync radi kroz kontejner
+- kontejner se izvršava kao non-root (`uid=10001 izgon`)
+- benchmark kroz Docker: **93,1 % ušteda**, p50 4,5 ms — isto kao bez Dockera
 
-Pokreni to jednom prije objave. To je prva komanda koju će svaki posjetilac otkucati.
+Usput popravljeno: healthcheck je koristio `localhost` kroz obični `urlopen`, pa bi
+na mašini iza korporativnog proxyja kontejner zauvijek pisao `unhealthy` iako servis
+radi. Sada ignoriše proxy iz okruženja.
+
+Svejedno pokreni `docker compose up -d` jednom kod sebe da potvrdiš na svom Dockeru —
+to je prva komanda koju će svaki posjetilac otkucati.
