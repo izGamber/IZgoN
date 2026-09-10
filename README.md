@@ -12,9 +12,12 @@ IzgoN sits between your fleet and your backend. Each node POSTs its current stat
 
 ![IzgoN — 93.9% less data at a 5% change rate, measured](izgon-dashboard.png)
 
-Live demo: <https://izgon-api.onrender.com> — it runs on a free tier and goes to
-sleep, so the first request takes about 40 seconds to wake it. The clip above is
-the same dashboard, without the wait.
+Live demo: <https://izgon-api.onrender.com> — two caveats before you click, because
+the free tier is honest about what it is. The first request takes 20–40 seconds to
+wake the instance. And the counters reset to zero every time it sleeps: the free
+plan has no persistent disk, so the SQLite event log goes with the container. The
+image above is the same dashboard with traffic in it. To fill it yourself, point
+`benchmark.py` at the demo and watch the number climb.
 
 ---
 
