@@ -49,6 +49,15 @@ You will **not** get value if your payloads are small, infrequent, or change com
 
 ## Quick start
 
+Nothing to clone or build — the image is published:
+
+```bash
+docker run -p 8000:8000 -e DATAPULSE_API_KEY=change-me ghcr.io/izgamber/izgon:latest
+```
+
+That runs IzgoN on its own. For per-node baselines that survive a restart you
+want Redis alongside it, which is what the compose file is for:
+
 ```bash
 git clone https://github.com/izGamber/IZgoN.git
 cd IZgoN
@@ -235,6 +244,8 @@ All settings are environment variables. Copy `.env.example` to `.env` and edit.
 | `DATAPULSE_LICENSE_KEY` | — | Paid licence key. |
 | `DATAPULSE_LICENSE_SECRET` | — | HMAC secret used to validate the key offline. |
 | `DATAPULSE_ALLOWED_ORIGINS` | `*` | CORS origins. **Narrow this in production.** |
+| `DATAPULSE_MAX_STATE_DEPTH` | `32` | Reject `state` nested deeper than this with `422`. |
+| `DATAPULSE_MAX_STATE_BYTES` | `1048576` | Reject a `state` larger than this with `413`. |
 
 ---
 
@@ -280,6 +291,9 @@ Read these before you put it on anything reachable from outside:
   before exposing the dashboard publicly.
 - **There is no built-in rate limiting.** Put it behind nginx, Caddy or your
   cloud load balancer if it faces the internet.
+- **`state` is bounded in depth and size** (32 levels, 1 MB) and both limits are
+  checked before anything touches the payload. Without them a 1.8 KB body nested
+  300 levels deep was enough to return a `500`.
 - **Your licence key and signing secret belong in `.env`, never in git.** The
   shipped `.gitignore` already excludes `.env`, `sales.log` and `*.db`.
 
@@ -310,5 +324,5 @@ Requires a reachable Redis.
 
 ## Status
 
-Version 1.1.0 — see [CHANGELOG.md](CHANGELOG.md). Built and maintained by one person.
+Version 1.1.1 — see [CHANGELOG.md](CHANGELOG.md). Built and maintained by one person.
 If something is broken, open an issue and say what you sent and what you got back.

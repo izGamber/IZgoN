@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.1 — 2026-09-11
+
+Three holes found by attacking the running server rather than reading the code.
+
+### Fixed
+
+- **Byte counts were wrong for any non-ASCII payload.** `json.dumps` escapes
+  every non-ASCII character to `\uXXXX`, so `{"grad":"日本東京"}` was counted as
+  75 bytes while the wire carries 43. Every fleet reporting Chinese, Japanese,
+  Cyrillic or Bosnian diacritics had its totals overstated by most of half —
+  and the `--price-per-mb` figure with them. `ensure_ascii=False` now, verified
+  against the real UTF-8 length.
+- **A deeply nested payload returned HTTP 500.** 1.8 KB nested 300 levels was
+  enough to blow the recursion limit inside serialisation. `state` deeper than
+  `DATAPULSE_MAX_STATE_DEPTH` (32) is now refused with `422` and a message
+  saying which knob to turn. The depth check is iterative, because recursing
+  there would be the same bug.
+- **There was no limit on payload size.** A 5 MB state was accepted and stored.
+  Now `413` past `DATAPULSE_MAX_STATE_BYTES` (1 MB default). Both limits are
+  checked before anything touches the state.
+
+### Added
+
+- **Published Docker image.** `docker run -p 8000:8000 ghcr.io/izgamber/izgon:latest`
+  — no clone, no build. A GitHub Actions workflow builds and pushes it on every
+  push to `main` and every `v*` tag.
+
 ## 1.1.0 — 2026-09-10
 
 The measurement was wrong. This fixes it, and the published numbers move up as a

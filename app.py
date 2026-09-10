@@ -1,5 +1,5 @@
 """
-IzgoN - single-file deploy build (v1.1.0 - honest byte accounting: one compact
+IzgoN - single-file deploy build (v1.1.1 - honest byte accounting: one compact
 ruler on both sides of the comparison, and a delta is never sent when it would
 be bigger than the state it replaces).
 
@@ -80,8 +80,13 @@ def _wire_bytes(obj) -> bytes:
     and mixing this ruler with a compact one on the other side of the
     comparison produces a savings figure that is simply wrong. One ruler,
     compact, on both sides.
+
+    ensure_ascii=False for the same reason. The default escapes every non-ASCII
+    character to \\uXXXX, so {"grad":"\u65e5\u672c\u6771\u4eac"} was counted as 75 bytes when the
+    wire carries 43. Any fleet reporting Chinese, Japanese, Cyrillic or our own
+    diacritics had its byte totals overstated by most of half.
     """
-    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 class DeltaSyncEngine:
@@ -355,7 +360,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="IzgoN", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.1.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -386,6 +391,31 @@ class SyncRequest(BaseModel):
 # caller can grow memory without limit and fill the log with junk.
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
+# A payload nested a few hundred levels deep used to reach json.dumps and the
+# recursive differ and come back as a 500: a 1.8 KB body was enough. Both limits
+# are checked before anything touches the state.
+MAX_STATE_DEPTH = int(os.environ.get("DATAPULSE_MAX_STATE_DEPTH", "32"))
+MAX_STATE_BYTES = int(os.environ.get("DATAPULSE_MAX_STATE_BYTES", str(1024 * 1024)))
+
+
+def _too_deep(obj, limit: int) -> bool:
+    """Iterative on purpose. Recursing here would be the very bug it guards."""
+    stack = [(obj, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return True
+        if isinstance(node, dict):
+            children = node.values()
+        elif isinstance(node, list):
+            children = node
+        else:
+            continue
+        for child in children:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return False
+
 
 @app.post("/api/nodes/{node_id}/sync")
 def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
@@ -394,6 +424,23 @@ def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
             status_code=422,
             detail=(
                 "node_id must be 1-128 characters of A-Z a-z 0-9 . _ : -"
+            ),
+        )
+    if _too_deep(body.state, MAX_STATE_DEPTH):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"state is nested deeper than {MAX_STATE_DEPTH} levels; raise "
+                "DATAPULSE_MAX_STATE_DEPTH if you really report structures that deep"
+            ),
+        )
+    state_bytes = len(_wire_bytes(body.state))
+    if state_bytes > MAX_STATE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"state is {state_bytes} bytes, limit is {MAX_STATE_BYTES}; raise "
+                "DATAPULSE_MAX_STATE_BYTES if your reports are genuinely this large"
             ),
         )
     if not _license_status()["licensed"]:
