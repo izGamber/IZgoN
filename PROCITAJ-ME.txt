@@ -1,0 +1,33 @@
+IzgoN — instalacija na Windows
+==============================
+
+1. Raspakuj ovaj folder bilo gdje (npr. Desktop).
+2. Dvoklikni  IzgoN-Setup.cmd
+3. Sačekaj. Kad završi, na Desktopu će ti stajati ikona "IzgoN".
+4. Klikni tu ikonu kad god hoćeš otvoriti dashboard.
+
+Treba ti Docker Desktop. Ako ga nemaš, setup će ti reći i dati komandu.
+
+Sve živi u jednom folderu: C:\Users\<ti>\IzgoN
+Uklanjanje: pokreni IzgoN-Stop, pa obriši taj folder i dvije prečice.
+
+--------------------------------------------------------------------
+
+IzgoN — Windows setup (English)
+===============================
+
+1. Unzip this folder anywhere.
+2. Double-click  IzgoN-Setup.cmd
+3. When it finishes there is an "IzgoN" icon on your Desktop.
+4. Click that icon whenever you want the dashboard.
+
+Requires Docker Desktop. If it is missing, the setup says so and gives you
+the one command that installs it.
+
+Everything lives in one folder: %USERPROFILE%\IzgoN
+To remove: run IzgoN-Stop, then delete that folder and the two shortcuts.
+
+--------------------------------------------------------------------
+
+https://izgamber.github.io/IZgoN/
+https://github.com/izGamber/IZgoN

@@ -1,55 +1,49 @@
-# IzgoN - one-shot setup for Windows.
+# IzgoN - setup for Windows.
 #
-# Double-click IzgoN-Setup.cmd, or run this directly:
-#     powershell -ExecutionPolicy Bypass -File install-windows.ps1
+# Double-click IzgoN-Setup.cmd. This is the script it runs.
 #
-# What it does, in order, and nothing else:
+# What it does, and nothing else:
 #   1. checks that Docker is installed and running
 #   2. creates %USERPROFILE%\IzgoN
 #   3. writes a compose file that pulls the published image - no build
-#   4. generates a random API key and writes it to .env
-#   5. starts IzgoN and Redis, waits until the health check passes
-#   6. opens the dashboard
+#   4. generates a random API key into .env
+#   5. starts IzgoN and Redis and waits until the service answers
+#   6. puts an IzgoN icon on your Desktop and in the Start menu
+#   7. opens the dashboard
 #
-# It installs nothing into Windows itself and touches nothing outside that one
-# folder. To remove IzgoN completely: run "docker compose down -v" in it, then
-# delete the folder.
+# It installs nothing into Windows itself. Everything lives in that one folder
+# plus two shortcuts. To remove it: run "docker compose down -v" in the folder,
+# delete the folder, delete the two shortcuts.
 
 $ErrorActionPreference = "Stop"
-
-function Say([string]$Text, [string]$Colour = "Gray") {
-    Write-Host $Text -ForegroundColor $Colour
-}
+function Say([string]$Text, [string]$Colour = "Gray") { Write-Host $Text -ForegroundColor $Colour }
 
 Say ""
 Say "  IzgoN - setup" "Cyan"
-Say "  ---------------------------------------------" "DarkGray"
+Say "  --------------------------------------------------" "DarkGray"
 Say ""
 
 # --- 1. Docker ---------------------------------------------------------------
-Say "  [1/5] Checking Docker..."
-$docker = Get-Command docker -ErrorAction SilentlyContinue
-if (-not $docker) {
+Say "  [1/6] Checking Docker..."
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Say ""
     Say "  Docker is not installed." "Yellow"
     Say ""
-    Say "  IzgoN is a server, and it needs Redis next to it. Docker is what runs"
-    Say "  both with one command. Install it, restart the computer, then run this"
-    Say "  again:"
+    Say "  IzgoN is a server and it needs Redis beside it. Docker runs both with"
+    Say "  one command. Install it, restart the computer, then double-click"
+    Say "  IzgoN-Setup.cmd again:"
     Say ""
     Say "      winget install -e --id Docker.DockerDesktop" "White"
     Say ""
     Read-Host "  Press Enter to close"
     exit 1
 }
-
-try {
-    docker info 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "engine down" }
-} catch {
+docker info 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) {
     Say ""
-    Say "  Docker is installed but not running." "Yellow"
-    Say "  Start Docker Desktop, wait for 'Engine running', then run this again."
+    Say "  Docker is installed but the engine is not running." "Yellow"
+    Say "  Start Docker Desktop, wait until it says 'Engine running', then"
+    Say "  double-click IzgoN-Setup.cmd again."
     Say ""
     Read-Host "  Press Enter to close"
     exit 1
@@ -57,14 +51,14 @@ try {
 Say "        Docker is running." "Green"
 
 # --- 2. Folder ---------------------------------------------------------------
-$Home_ = [Environment]::GetFolderPath("UserProfile")
-$Dir = Join-Path $Home_ "IzgoN"
-Say "  [2/5] Folder: $Dir"
+$Dir = Join-Path ([Environment]::GetFolderPath("UserProfile")) "IzgoN"
+Say "  [2/6] Folder: $Dir"
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+$Src = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Dir
 
-# --- 3. Compose file ---------------------------------------------------------
-Say "  [3/5] Writing docker-compose.yml (pulls the published image, no build)..."
+# --- 3. Compose --------------------------------------------------------------
+Say "  [3/6] Writing docker-compose.yml (pulls the published image, no build)..."
 $Compose = @'
 services:
   redis:
@@ -108,28 +102,26 @@ Set-Content -Path (Join-Path $Dir "docker-compose.yml") -Value $Compose -Encodin
 # --- 4. API key --------------------------------------------------------------
 $EnvPath = Join-Path $Dir ".env"
 if (Test-Path $EnvPath) {
-    Say "  [4/5] .env already exists - keeping your existing key." "Yellow"
+    Say "  [4/6] .env already there - keeping your existing key." "Yellow"
     $hit = Select-String -Path $EnvPath -Pattern '^DATAPULSE_API_KEY=(.*)$' | Select-Object -First 1
     if ($hit) { $Key = $hit.Matches[0].Groups[1].Value } else { $Key = "(see .env)" }
 } else {
-    Say "  [4/5] Generating an API key..."
+    Say "  [4/6] Generating an API key..."
     $bytes = New-Object byte[] 24
-    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
-    $rng.GetBytes($bytes)
+    (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($bytes)
     $Key = [Convert]::ToBase64String($bytes).Replace('+','-').Replace('/','_').TrimEnd('=')
-    $EnvBody = @(
-        "# Generated by install-windows.ps1. Keep this file out of git.",
+    Set-Content -Path $EnvPath -Encoding UTF8 -Value @(
+        "# Written by IzgoN setup. Keep this file to yourself.",
         "DATAPULSE_API_KEY=$Key",
         "DATAPULSE_FREE_TIER_LIMIT=10000",
         "DATAPULSE_ALLOWED_ORIGINS=*",
         "DATAPULSE_LICENSE_KEY=",
         "DATAPULSE_LICENSE_SECRET="
     )
-    Set-Content -Path $EnvPath -Value $EnvBody -Encoding UTF8
 }
 
 # --- 5. Start ----------------------------------------------------------------
-Say "  [5/5] Pulling the image and starting (first run takes a minute)..."
+Say "  [5/6] Pulling the image and starting (first run takes a minute)..."
 docker compose up -d
 if ($LASTEXITCODE -ne 0) {
     Say ""
@@ -137,41 +129,131 @@ if ($LASTEXITCODE -ne 0) {
     Read-Host "  Press Enter to close"
     exit 1
 }
-
-Say "        Waiting for the service to answer..."
+Say "        Waiting for the dashboard to answer..."
 $up = $false
 foreach ($i in 1..60) {
     Start-Sleep -Seconds 2
     try {
-        $r = Invoke-WebRequest -Uri "http://localhost:8000/healthz" -TimeoutSec 3 -UseBasicParsing
-        if ($r.StatusCode -eq 200) { $up = $true; break }
+        if ((Invoke-WebRequest -Uri "http://localhost:8000/healthz" -TimeoutSec 3 -UseBasicParsing).StatusCode -eq 200) {
+            $up = $true; break
+        }
     } catch { }
 }
 
+# --- 6. Icon on the Desktop --------------------------------------------------
+Say "  [6/6] Putting an IzgoN icon on your Desktop..."
+
+# The icon file ships next to this script; copy it in so the shortcut keeps
+# working after you delete the download folder.
+$IcoSrc = Join-Path $Src "izgon.ico"
+$Ico    = Join-Path $Dir "izgon.ico"
+if (Test-Path $IcoSrc) { Copy-Item $IcoSrc $Ico -Force }
+
+# A launcher, so clicking the icon starts IzgoN if it is stopped and then
+# opens the dashboard. Clicking it when IzgoN is already running just opens it.
+$Launcher = @'
+@echo off
+title IzgoN
+cd /d "%~dp0"
+echo.
+echo   Starting IzgoN...
+docker compose up -d
+if errorlevel 1 goto down
+echo   Waiting for the dashboard...
+set /a n=0
+:wait
+curl.exe -s -o nul -m 3 http://localhost:8000/healthz && goto open
+set /a n+=1
+if %n% GEQ 45 goto slow
+timeout /t 2 /nobreak >nul
+goto wait
+:open
+start "" http://localhost:8000
+exit /b 0
+:slow
+echo.
+echo   It did not answer in 90 seconds. Look at what the containers say:
+echo       docker compose ps
+echo       docker compose logs izgon
+echo.
+pause
+exit /b 1
+:down
+echo.
+echo   Docker is not running. Start Docker Desktop and click the icon again.
+echo.
+pause
+exit /b 1
+'@
+$LauncherPath = Join-Path $Dir "IzgoN.cmd"
+Set-Content -Path $LauncherPath -Value $Launcher -Encoding ASCII
+
+# A second one, to stop it.
+$Stop = @'
+@echo off
+title IzgoN - stop
+cd /d "%~dp0"
+docker compose down
+echo.
+echo   IzgoN is stopped. Your data is kept.
+echo.
+pause
+'@
+Set-Content -Path (Join-Path $Dir "IzgoN-Stop.cmd") -Value $Stop -Encoding ASCII
+
+function New-Shortcut($LinkPath, $Target, $IconPath, $Desc) {
+    $ws = New-Object -ComObject WScript.Shell
+    $sc = $ws.CreateShortcut($LinkPath)
+    $sc.TargetPath       = $Target
+    $sc.WorkingDirectory = (Split-Path -Parent $Target)
+    $sc.Description      = $Desc
+    if (Test-Path $IconPath) { $sc.IconLocation = "$IconPath,0" }
+    $sc.Save()
+}
+
+$madeIcon = $false
+try {
+    $Desktop = [Environment]::GetFolderPath("Desktop")
+    New-Shortcut (Join-Path $Desktop "IzgoN.lnk") $LauncherPath $Ico "IzgoN - open the delta-sync dashboard"
+    $StartMenu = Join-Path ([Environment]::GetFolderPath("ApplicationData")) "Microsoft\Windows\Start Menu\Programs"
+    New-Shortcut (Join-Path $StartMenu "IzgoN.lnk") $LauncherPath $Ico "IzgoN - open the delta-sync dashboard"
+    $madeIcon = $true
+    Say "        Icon created on the Desktop and in the Start menu." "Green"
+} catch {
+    Say "        Could not create the shortcut: $($_.Exception.Message)" "Yellow"
+    Say "        You can still start IzgoN from $LauncherPath" "Yellow"
+}
+
+# --- done --------------------------------------------------------------------
 Say ""
 if ($up) {
-    Say "  ---------------------------------------------" "DarkGray"
+    Say "  --------------------------------------------------" "DarkGray"
     Say "  IzgoN is running." "Green"
     Say ""
+    if ($madeIcon) { Say "  Look at your Desktop - there is an IzgoN icon." "White" }
     Say "  Dashboard:  http://localhost:8000" "White"
     Say "  API key:    $Key" "White"
     Say "  Folder:     $Dir"
-    Say ""
-    Say "  Send your first report - paste this into PowerShell:" "DarkGray"
     $example = @"
+
+  Want a real app window instead of a browser tab? Open the dashboard in
+  Chrome or Edge, then use the install icon in the address bar (or the menu ->
+  Install). It becomes a windowed app with the same icon.
+
+  Send your first report - paste this into PowerShell:
 
       `$h = @{ 'X-API-Key' = '$Key' }
       Invoke-RestMethod -Uri http://localhost:8000/api/nodes/sensor-01/sync ``
         -Method Post -ContentType 'application/json' -Headers `$h ``
         -Body '{"state": {"temp": 21.5, "hum": 60}}'
 
-  Send it twice. The second time comes back NO_CHANGE, 0 bytes.
+  Send it twice. The second time comes back NO_CHANGE, 0 bytes - and the
+  dashboard counter moves while you watch.
+
+  Stop it:  the IzgoN-Stop shortcut, or "docker compose down" in the folder.
 "@
     Write-Host $example -ForegroundColor DarkGray
-    Say ""
-    Say "  Stop it:    docker compose down      (in $Dir)" "DarkGray"
-    Say "  Remove it:  docker compose down -v   (also deletes the data)" "DarkGray"
-    Say "  ---------------------------------------------" "DarkGray"
+    Say "  --------------------------------------------------" "DarkGray"
     Start-Process "http://localhost:8000"
 } else {
     Say "  Started, but nothing answered on http://localhost:8000 in two minutes." "Yellow"
