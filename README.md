@@ -112,7 +112,7 @@ Measured results, all reproducible with the commands in [BENCHMARK.md](BENCHMARK
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/api/nodes/{id}/sync` | API key | Submit node state, get `NO_CHANGE` or delta |
-| `GET` | `/api/nodes` | API key | List known nodes and their baselines |
+| `GET` | `/api/nodes` | API key | List known nodes and their baselines (paged, `?limit=` up to 5000) |
 | `GET` | `/api/metrics` | — | Live totals: bytes full, bytes sent, savings |
 | `GET` | `/api/license` | — | Current tier and remaining free syncs |
 | `GET` | `/healthz` | — | Redis reachability |
@@ -130,6 +130,10 @@ Measured results, all reproducible with the commands in [BENCHMARK.md](BENCHMARK
   "bytes_sent": 14
 }
 ```
+
+`node_id` must be 1–128 characters of `A–Z a–z 0–9 . _ : -`. Anything else is
+rejected with `422`: node ids become Redis keys and log rows, so an unbounded id
+is an unbounded memory cost.
 
 `status` is `NO_CHANGE` or `SYNC_REQUIRED`. On `NO_CHANGE`, `delta` is `null` and `bytes_sent` is `0`. `checksum` is a SHA-256 of the stored state, so a client can confirm both sides agree without transferring anything. Nested objects are diffed recursively. **Lists are compared as a whole, not element by element** — if one item in a list changes, the whole list is sent. This is a deliberate limitation; see [Limitations](#limitations).
 
@@ -177,6 +181,24 @@ does nothing: validation is local HMAC-SHA256, so your server needs the secret t
 verify it and never contacts a licence server.
 
 ---
+
+## Security notes
+
+Read these before you put it on anything reachable from outside:
+
+- **`DATAPULSE_API_KEY` protects every write.** It ships as `dev-local-key`.
+  Change it. The comparison is constant-time, so the key cannot be recovered by
+  timing the responses.
+- **`/api/metrics` and `/healthz` are deliberately unauthenticated** so the
+  dashboard and your monitoring can read them. They expose event counts, node
+  counts and byte totals — no state, no keys. If that is too much for your
+  deployment, put them behind your reverse proxy.
+- **`DATAPULSE_ALLOWED_ORIGINS` defaults to `*`.** Narrow it to your own origin
+  before exposing the dashboard publicly.
+- **There is no built-in rate limiting.** Put it behind nginx, Caddy or your
+  cloud load balancer if it faces the internet.
+- **Your licence key and signing secret belong in `.env`, never in git.** The
+  shipped `.gitignore` already excludes `.env`, `sales.log` and `*.db`.
 
 ## Limitations
 
