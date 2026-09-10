@@ -1,6 +1,10 @@
 """
-IzgoN - single-file deploy build (v1.0.1 - hardened: timing-safe auth, WAL,
-O(1) free-tier gate, bounded node ids).
+IzgoN - single-file deploy build (v1.1.0 - honest byte accounting: one compact
+ruler on both sides of the comparison, and a delta is never sent when it would
+be bigger than the state it replaces).
+
+v1.0.1 hardening is still in here: timing-safe auth, WAL, O(1) free-tier gate,
+bounded node ids.
 
 Mechanically merged from engine.py, storage.py, metrics_db.py, licensing.py
 and main.py in the canonical multi-file repo, with static assets inlined.
@@ -68,6 +72,18 @@ def compute_delta(old_state: Optional[dict], new_state: dict) -> dict:
     return delta
 
 
+def _wire_bytes(obj) -> bytes:
+    """Serialize the way anything paying for bandwidth actually would.
+
+    json.dumps() defaults to ", " and ": " separators, which adds two bytes per
+    field to every measurement. No device on a metered SIM sends those spaces,
+    and mixing this ruler with a compact one on the other side of the
+    comparison produces a savings figure that is simply wrong. One ruler,
+    compact, on both sides.
+    """
+    return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+
+
 class DeltaSyncEngine:
     """Stateless per call: the caller supplies old_state (fetched from
     wherever it's persisted) and gets back a sync decision plus the real
@@ -77,7 +93,7 @@ class DeltaSyncEngine:
     def evaluate(self, node_id: str, old_state: Optional[dict], new_state: dict) -> dict:
         new_hash = _hash(new_state)
         old_hash = _hash(old_state) if old_state is not None else None
-        full_bytes = json.dumps(new_state).encode("utf-8")
+        full_bytes = _wire_bytes(new_state)
 
         if old_hash == new_hash:
             return {
@@ -90,7 +106,24 @@ class DeltaSyncEngine:
             }
 
         delta = compute_delta(old_state, new_state)
-        delta_bytes = json.dumps(delta).encode("utf-8")
+        delta_bytes = _wire_bytes(delta)
+
+        # A delta is not always smaller. Drop enough keys at once and the
+        # tombstones outweigh what is left: {"a":1} is 7 bytes, while the delta
+        # that removes four sibling keys is 101. Sending the delta there would
+        # cost the customer money to save them nothing, so send the state and
+        # say so. bytes_sent can therefore never exceed bytes_full, and the
+        # savings figure can never go negative.
+        if len(delta_bytes) >= len(full_bytes):
+            return {
+                "node_id": node_id,
+                "status": "FULL_STATE",
+                "checksum": new_hash,
+                "delta": new_state,
+                "bytes_full": len(full_bytes),
+                "bytes_sent": len(full_bytes),
+            }
+
         return {
             "node_id": node_id,
             "status": "SYNC_REQUIRED",
@@ -322,7 +355,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="IzgoN", version="1.0.1", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

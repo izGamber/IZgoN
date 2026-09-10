@@ -2,7 +2,7 @@
 
 **Your devices are sending the same data over and over. IzgoN sends only what changed — and shows you exactly how many bytes you stopped paying for.**
 
-IzgoN sits between your fleet and your backend. Each node POSTs its current state; IzgoN compares it to the last state it saw, and returns either `NO_CHANGE` (0 bytes of payload) or a minimal JSON delta. Every call is logged, so the dashboard can tell you the one number that matters: **bytes you would have sent vs. bytes you actually sent.**
+IzgoN sits between your fleet and your backend. Each node POSTs its current state; IzgoN compares it to the last state it saw, and returns `NO_CHANGE` (0 bytes of payload), a minimal JSON delta, or — when a delta would be bigger than the state it replaces — the state itself. Every call is logged, so the dashboard can tell you the one number that matters: **bytes you would have sent vs. bytes you actually sent.**
 
 ```
        node state              IzgoN                 your backend
@@ -10,7 +10,7 @@ IzgoN sits between your fleet and your backend. Each node POSTs its current stat
    {"t":21.5,"h":60}  ──►  compare + diff  ──►  NO_CHANGE    (0 bytes)
 ```
 
-![IzgoN — 93.9% less data at a 5% change rate, measured](izgon-dashboard.png)
+![IzgoN dashboard — bytes avoided, counted live from real traffic](izgon-dashboard.png)
 
 Live demo: <https://izgon-api.onrender.com> — two caveats before you click, because
 the free tier is honest about what it is. The first request takes 20–40 seconds to
@@ -43,7 +43,7 @@ You will get value from IzgoN if you have **many nodes reporting frequently, whe
 - Dashboards or monitoring agents polling every few seconds
 - Game or simulation servers syncing entity state
 
-You will **not** get value if your payloads are small, infrequent, or change completely every time. Run the benchmark below against your own data before you pay for anything.
+You will **not** get value if your payloads are small, infrequent, or change completely every time. Run the benchmark below against your own data before you pay for anything — `--payload-file` takes an export of your real reports, so it is one command, not a code change.
 
 ---
 
@@ -71,7 +71,7 @@ curl -X POST http://localhost:8000/api/nodes/sensor-01/sync \
 Send the same state again — `NO_CHANGE`, zero delta bytes:
 
 ```json
-{"node_id":"sensor-01","status":"NO_CHANGE","checksum":"4680f5c0…","delta":null,"bytes_full":37,"bytes_sent":0}
+{"node_id":"sensor-01","status":"NO_CHANGE","checksum":"4680f5c0…","delta":null,"bytes_full":32,"bytes_sent":0}
 ```
 
 Change one field and only that field comes back:
@@ -87,23 +87,62 @@ curl -X POST http://localhost:8000/api/nodes/sensor-01/sync \
 
 ## Measure it on your own data
 
-Do not take anyone's benchmark on faith, including this one. `benchmark.py` ships in the repo, uses only the Python standard library, and runs against your own IzgoN instance:
+Do not take anyone's benchmark on faith, including this one. `benchmark.py` ships in
+the repo and uses only the Python standard library.
+
+**Point it at your own reports. One command:**
+
+```bash
+python3 benchmark.py --payload-file my-reports.json
+```
+
+The file is a JSON array, or JSON Lines, of reports your devices actually sent —
+export a few thousand rows from wherever you already store them. Each device
+replays its own real sequence in its real order, and the change rate is *measured
+from your data*, not assumed:
+
+```
+IzgoN benchmark — replaying 4,812 of your own reports from 37 device(s)
+Observed change rate: 6.4%  — measured from your data
+```
+
+Common shapes are handled without editing anything. The device id is picked up
+automatically from `node_id`, `device_id`, `deviceId`, `device`, `id` or `serial`;
+override with `--id-field`. If each record wraps the payload, unwrap it:
+
+```bash
+python3 benchmark.py --payload-file logs.jsonl --state-field state --id-field device_id
+python3 benchmark.py --payload-file logs.jsonl --price-per-mb 0.05   # prints money, not just bytes
+```
+
+Each run uses its own node-id namespace, so a second run starts from a clean
+baseline and cannot inherit the first run's state and quietly inflate the result.
+
+**If you have no sample yet**, the synthetic mode shows the shape of the curve:
 
 ```bash
 python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.05
 ```
 
-It generates realistic node states, replays them, and prints bytes that would have been sent, bytes actually sent, and the saving. Point `--change-rate` at whatever matches your real workload.
-
 Measured results, all reproducible with the commands in [BENCHMARK.md](BENCHMARK.md):
 
 | Change rate | Without IzgoN | With IzgoN | Saved |
 |---|---|---|---|
-| 5 % | 759.2 KB | 46.5 KB | **93.9 %** |
-| 20 % | 758.2 KB | 161.9 KB | **78.6 %** |
-| 70 % | 758.4 KB | 548.6 KB | **27.7 %** |
+| 5 % | 759.2 KB | 43.0 KB | **94.3 %** |
+| 20 % | 758.2 KB | 147.5 KB | **80.5 %** |
+| 70 % | 758.4 KB | 490.4 KB | **35.3 %** |
 
-**Read the last row.** When every report differs from the one before it, the saving falls to 27.7 % and IzgoN stops being worth running. That is the honest boundary of this tool. Replace `make_state()` in the benchmark with a sample of your own payloads before you buy anything — if the number is small for your data, don't.
+**Read the last row.** When almost every report differs from the one before it, the
+saving falls to 35.3 % and most of the point of running this disappears. That is the
+honest boundary of the tool. Measure your own payloads before you buy anything — if
+the number is small for your data, don't.
+
+> These figures moved up in v1.1.0, and the reason matters more than the numbers.
+> Until v1.1.0 the "would have sent" side was measured with compact JSON while the
+> "actually sent" side used Python's default `json.dumps` spacing — two rulers, so
+> every published saving was wrong, understated by roughly two bytes per field.
+> Both sides are compact now. The old figures (93.9 / 78.6 / 27.7 %) were too low,
+> not too high; anything published before this date understates the tool.
 
 ---
 
@@ -126,8 +165,8 @@ Measured results, all reproducible with the commands in [BENCHMARK.md](BENCHMARK
   "status": "SYNC_REQUIRED",
   "checksum": "e163cdfd20a3617d2fe560a3dd849c2fb8e7c8041c7a49fd225bea93be26ad33",
   "delta": { "temp": 22.1 },
-  "bytes_full": 37,
-  "bytes_sent": 14
+  "bytes_full": 32,
+  "bytes_sent": 13
 }
 ```
 
@@ -135,7 +174,51 @@ Measured results, all reproducible with the commands in [BENCHMARK.md](BENCHMARK
 rejected with `422`: node ids become Redis keys and log rows, so an unbounded id
 is an unbounded memory cost.
 
-`status` is `NO_CHANGE` or `SYNC_REQUIRED`. On `NO_CHANGE`, `delta` is `null` and `bytes_sent` is `0`. `checksum` is a SHA-256 of the stored state, so a client can confirm both sides agree without transferring anything. Nested objects are diffed recursively. **Lists are compared as a whole, not element by element** — if one item in a list changes, the whole list is sent. This is a deliberate limitation; see [Limitations](#limitations).
+`status` is one of three values, and a client must handle all three:
+
+| `status` | `delta` holds | What the client does |
+|---|---|---|
+| `NO_CHANGE` | `null`, `bytes_sent` is `0` | nothing — both sides already agree |
+| `SYNC_REQUIRED` | only the changed keys | **merge** it into the known state |
+| `FULL_STATE` | the complete new state | **replace** the known state with it |
+
+`FULL_STATE` exists because a delta is not always smaller. Drop enough keys at once
+and the deletion markers outweigh what is left — `{"a":1}` is 7 bytes, while the
+delta that removes four sibling keys is 101. Sending that delta would cost you money
+to save you nothing, so IzgoN sends the state instead and says so. `bytes_sent` can
+therefore never exceed `bytes_full`, and a measured saving can never come out
+negative. A client that only knows the first two statuses should treat an unknown
+one as "resync from scratch", which is exactly right.
+
+`checksum` is a SHA-256 of the stored state, so a client can confirm both sides agree
+without transferring anything. `bytes_full` and `bytes_sent` are both compact JSON —
+one ruler on both sides, so the difference between them is a real number.
+
+Nested objects are diffed recursively. **Lists are compared as a whole, not element
+by element** — if one item in a list changes, the whole list is sent. This is a
+deliberate limitation; see [Limitations](#limitations).
+
+### Applying what comes back
+
+`izgon_client.py` in the repo is a ~60-line, stdlib-only reference client. It is not
+an SDK — it is the smallest correct implementation of the three statuses, short
+enough to read in one sitting and copy into whatever language you actually use:
+
+```python
+from izgon_client import IzgonClient
+
+c = IzgonClient("http://localhost:8000", "dev-local-key")
+mirror = {}
+for report in my_reports:
+    mirror = c.sync("sensor-01", report, mirror)
+    # mirror now equals report, having transferred only what changed
+```
+
+The merge rule it implements: nested objects merge recursively, and
+`{"__deleted__": true}` removes a key. Verified by replaying 720 randomised
+mutations — nested objects, lists, nulls, booleans, keys appearing and
+disappearing — and asserting after **every** sync that the reconstructed state is
+byte-identical to what was sent.
 
 ---
 
@@ -205,6 +288,8 @@ Read these before you put it on anything reachable from outside:
 Stated plainly, because you will find them anyway:
 
 - **Lists are not diffed element by element.** Change one entry in a 500-item array and the whole array is sent. If your payloads are list-heavy, savings will be much lower than the benchmark suggests.
+- **A shrinking payload saves you nothing.** When keys disappear, the deletion markers can be bigger than the state that is left. IzgoN detects that and sends the state whole (`FULL_STATE`), so you never pay *more* than sending everything — but you save nothing on that sync either.
+- **The first report from any node is always sent in full.** There is nothing to compare it against. On a short sample this drags the average down, correctly.
 - **Baseline state lives in Redis.** If Redis is wiped, every node sends full state once to re-establish its baseline. Use a persistent Redis volume — the shipped `docker-compose.yml` does.
 - **Single instance.** There is no clustering. One IzgoN process owns the baselines.
 - **No client SDK yet.** Integration is a plain HTTP POST; there is no packaged library.
@@ -225,4 +310,5 @@ Requires a reachable Redis.
 
 ## Status
 
-Version 1.0.0. Built and maintained by one person. If something is broken, open an issue and say what you sent and what you got back.
+Version 1.1.0 — see [CHANGELOG.md](CHANGELOG.md). Built and maintained by one person.
+If something is broken, open an issue and say what you sent and what you got back.
