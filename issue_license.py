@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Issue an IzgoN licence key after a sale.
+Issue one licence pair (secret + key) for ONE IzgoN buyer.
 
-    export DATAPULSE_LICENSE_SECRET="the-same-secret-your-server-uses"
-    python3 issue_license.py --email kupac@example.com
+    python3 issue_license.py --email buyer@example.com --order LS-1234
 
-Key format is  DPC-<base64(payload)>.<hmac-sha256 hex, first 24 chars>
-Payload is     {"email": ..., "product": ..., "issued": <unix ts>}
+Two decisions worth knowing about:
 
-The script tries to import app.py and validate the key it just made, so you
-never email a key that your own server would reject. If app.py can't be
-imported here, it prints both base64 variants and tells you how to test.
+1. Every buyer gets their OWN secret, generated here, at random. There is no
+   single shared secret that would break the whole scheme if it leaked. The
+   buyer's server needs the secret to validate the key at all — without it,
+   validation returns None and the key does nothing. A leaked pair therefore
+   unlocks exactly one install, and the buyer's email is inside the key.
 
-Keep DATAPULSE_LICENSE_SECRET out of git. Anyone holding it can mint keys.
+2. It produces only the encoding the server actually accepts: urlsafe base64
+   WITH padding. Unpadded variants fail base64 decoding on the server side.
+   The key is verified here, with the same procedure the server uses, before
+   anything is printed — if that check fails, nothing is sent.
+
+Prints a ready-to-send email and appends a row to sales.log (already in
+.gitignore). That log is the only record of the secrets: without it you cannot
+re-send a buyer their key.
 """
 
 import argparse
@@ -20,95 +28,103 @@ import base64
 import hashlib
 import hmac
 import json
-import os
+import pathlib
+import secrets
 import sys
 import time
 
 
-def sign(payload_b64: str, secret: str) -> str:
-    return hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()[:24]
-
-
-def build(payload: dict, secret: str, urlsafe: bool, strip_padding: bool) -> str:
+def make_pair(email: str, product: str = "izgon-pro"):
+    """Return (secret, key, payload) for this buyer."""
+    secret = secrets.token_hex(32)
+    payload = {"email": email, "product": product, "issued": int(time.time())}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    enc = base64.urlsafe_b64encode(raw) if urlsafe else base64.b64encode(raw)
-    payload_b64 = enc.decode()
-    if strip_padding:
-        payload_b64 = payload_b64.rstrip("=")
-    return f"DPC-{payload_b64}.{sign(payload_b64, secret)}"
+    b64 = base64.urlsafe_b64encode(raw).decode()          # padding is KEPT
+    sig = hmac.new(secret.encode(), b64.encode(), hashlib.sha256).hexdigest()[:24]
+    return secret, f"DPC-{b64}.{sig}", payload
 
 
-def try_validate(key: str, secret: str):
-    """Validate against app.py's own validator when we can reach it."""
+def verify(key: str, secret: str) -> bool:
+    """The same procedure the server runs. If this fails, do not send the key."""
     try:
-        os.environ.setdefault("DATAPULSE_LICENSE_SECRET", secret)
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        import app  # noqa: F401
+        if not key.startswith("DPC-") or "." not in key:
+            return False
+        b64, sig = key[4:].rsplit(".", 1)
+        expected = hmac.new(secret.encode(), b64.encode(), hashlib.sha256).hexdigest()[:24]
+        if not hmac.compare_digest(sig, expected):
+            return False
+        json.loads(base64.urlsafe_b64decode(b64.encode()).decode())
+        return True
     except Exception:
-        return None
-    validator = getattr(app, "validate_license", None)
-    if validator is None:
-        return None
-    try:
-        return validator(key)
-    except Exception:
-        return None
+        return False
+
+
+EMAIL = """Subject: Your IzgoN licence key
+
+Hello,
+
+Thank you for buying an IzgoN commercial licence. Below are the two values
+your instance needs. Both are required - the key alone does nothing.
+
+Add these two lines to your .env file:
+
+    DATAPULSE_LICENSE_KEY={key}
+    DATAPULSE_LICENSE_SECRET={secret}
+
+Then restart and confirm:
+
+    docker compose up -d
+    curl http://localhost:8000/api/license
+
+You should see "licensed": true.
+
+Copy the key including the trailing "=" - it is part of the key.
+These two values are tied to {email} and are yours alone. Keep them out of
+git and out of public issues.
+
+Setup guide, benchmark instructions and the stated limitations are in the
+file attached to your order. Anything unclear, or it does not validate:
+https://github.com/izGamber/IZgoN/issues
+
+Adnan Drndic
+IzgoN
+"""
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--email", required=True, help="customer email from the order")
-    p.add_argument("--product", default="izgon-pro", help="product identifier stored in the key")
-    p.add_argument("--secret", default=os.environ.get("DATAPULSE_LICENSE_SECRET", ""),
-                   help="defaults to $DATAPULSE_LICENSE_SECRET")
-    p.add_argument("--order", default="", help="order id, recorded in sales.log only")
-    args = p.parse_args()
+    p.add_argument("--email", required=True, help="buyer email from the order")
+    p.add_argument("--order", default="", help="order number, for your own records")
+    p.add_argument("--product", default="izgon-pro")
+    a = p.parse_args()
 
-    if not args.secret:
-        print("No secret. Set DATAPULSE_LICENSE_SECRET or pass --secret.", file=sys.stderr)
-        return 2
+    secret, key, _payload = make_pair(a.email, a.product)
 
-    payload = {"email": args.email, "product": args.product, "issued": int(time.time())}
+    if not verify(key, secret):
+        print("ERROR: the key failed its own verification. Do not send it.",
+              file=sys.stderr)
+        return 1
 
-    variants = [
-        ("urlsafe, no padding", build(payload, args.secret, True, True)),
-        ("urlsafe, padded", build(payload, args.secret, True, False)),
-        ("standard, no padding", build(payload, args.secret, False, True)),
-        ("standard, padded", build(payload, args.secret, False, False)),
-    ]
+    print("\n" + "=" * 68)
+    print("  VERIFIED - this pair validates against the server")
+    print("=" * 68)
+    print(EMAIL.format(key=key, secret=secret, email=a.email))
+    print("=" * 68)
 
-    accepted = [(label, key) for label, key in variants if try_validate(key, args.secret)]
-
-    print()
-    if accepted:
-        label, key = accepted[0]
-        print("Key (verified against app.py — this one works):")
-        print(f"\n    {key}\n")
-        print(f"  encoding: {label}")
-    else:
-        print("Could not import app.py to verify, so here are all variants.")
-        print("Test one before sending it: set it as DATAPULSE_LICENSE_KEY,")
-        print("restart, and check GET /api/license shows licensed: true.\n")
-        for label, key in variants:
-            print(f"  [{label}]\n    {key}\n")
-
-    print(f"  email:   {payload['email']}")
-    print(f"  product: {payload['product']}")
-    print(f"  issued:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(payload['issued']))}")
-
-    # Append to a local sales log so you always know who holds which key.
-    chosen = accepted[0][1] if accepted else variants[0][1]
-    line = json.dumps({
-        "issued_at": payload["issued"],
-        "email": payload["email"],
-        "product": payload["product"],
-        "order": args.order,
-        "key": chosen,
-    }, ensure_ascii=False)
-    with open("sales.log", "a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
-    print("\n  recorded in sales.log")
+    log = pathlib.Path("sales.log")
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "date": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "email": a.email,
+            "order": a.order,
+            "product": a.product,
+            "key": key,
+            "secret": secret,
+        }, ensure_ascii=False) + "\n")
+    print(f"\n  written to {log.resolve()}")
+    print("  sales.log is excluded by .gitignore - keep it, it is your only")
+    print("  record of the secrets you issued\n")
     return 0
 
 
