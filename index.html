@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IzgoN — send only what changed</title>
+<meta name="description" content="Self-hosted delta-sync server for device fleets. Sends only what changed and shows you the bytes you stopped paying for.">
+<meta property="og:title" content="IzgoN — send only what changed">
+<meta property="og:description" content="Self-hosted delta-sync server for device fleets. 94.3% less data at a 5% change rate — measured, and the case where it does not help is published too.">
+<meta property="og:type" content="website">
+<link rel="icon" href="https://izgon-api.onrender.com/icon-192.png">
+<style>
+  :root{
+    --bg:#05060b; --bg2:#0a0d18; --card:rgba(18,22,38,.55); --line:rgba(120,170,255,.16);
+    --fg:#eef4ff; --mut:#8fa0c4; --cy:#37e6ff; --vi:#a78bfa; --mg:#ff5fd8; --gr:#34ffb0; --am:#ffb454;
+    --mono:'SFMono-Regular',ui-monospace,Menlo,Consolas,'Liberation Mono',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,'Helvetica Neue',Arial,sans-serif;
+  }
+  :root[data-theme="light"]{
+    --bg:#fbfcfe; --bg2:#f2f5fa; --card:#fff; --line:#dde5f2;
+    --fg:#0d1220; --mut:#5a6a86; --cy:#0891b2; --vi:#7c3aed; --mg:#c026d3; --gr:#059669; --am:#b45309;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.65;
+       -webkit-font-smoothing:antialiased;overflow-x:hidden}
+  a{color:inherit}
+  .wrap{max-width:920px;margin:0 auto;padding-inline:20px}
+
+  /* backdrop */
+  .orbs{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
+  .orb{position:absolute;width:58vmax;height:58vmax;border-radius:50%;filter:blur(90px);
+       opacity:.30;mix-blend-mode:screen;animation:drift 26s ease-in-out infinite alternate}
+  :root[data-theme="light"] .orb{opacity:.16;mix-blend-mode:normal}
+  .orb.a{background:radial-gradient(circle,var(--cy),transparent 65%);top:-22%;left:-18%}
+  .orb.b{background:radial-gradient(circle,var(--vi),transparent 65%);bottom:-28%;right:-14%;animation-duration:32s;animation-delay:-7s}
+  @keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(5%,-4%) scale(1.12)}}
+  @media (prefers-reduced-motion:reduce){.orb{animation:none}}
+
+  /* top bar */
+  header.bar{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent);border-bottom:1px solid var(--line)}
+  .bar .wrap{display:flex;align-items:center;gap:14px;height:60px}
+  .logo{font-weight:800;letter-spacing:.5px;font-size:19px;
+    background:linear-gradient(100deg,var(--cy),var(--vi) 55%,var(--mg));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .bar nav{margin-inline-start:auto;display:flex;align-items:center;gap:8px}
+  .bar nav a.navlink{font-size:13px;color:var(--mut);text-decoration:none;padding:6px 9px;border-radius:8px}
+  .bar nav a.navlink:hover{color:var(--fg);background:var(--card)}
+  @media(max-width:760px){.bar nav a.navlink{display:none}}
+  select,.iconbtn{background:var(--card);color:var(--fg);border:1px solid var(--line);
+    border-radius:9px;padding:6px 9px;font:inherit;font-size:13px;cursor:pointer}
+
+  /* hero */
+  .hero{padding:70px 0 46px}
+  h1{font-size:clamp(30px,5.4vw,50px);line-height:1.1;letter-spacing:-.02em;font-weight:800}
+  h1 em{font-style:normal;background:linear-gradient(100deg,var(--cy),var(--vi) 60%,var(--mg));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{color:var(--mut);font-size:clamp(15px,2.1vw,18px);margin-top:18px;max-width:64ch}
+  .cta{display:flex;flex-wrap:wrap;gap:11px;margin-top:28px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:12px;
+    text-decoration:none;font-weight:650;font-size:14.5px;border:1px solid var(--line);
+    background:var(--card);color:var(--fg);transition:transform .15s,border-color .15s}
+  .btn:hover{transform:translateY(-1px);border-color:var(--cy)}
+  .btn.primary{background:linear-gradient(100deg,var(--cy),var(--vi));border:none;color:#05060b}
+  :root[data-theme="light"] .btn.primary{color:#fff}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .sub{font-size:12.5px;color:var(--mut);margin-top:12px}
+
+  /* stats */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-top:42px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:18px 20px}
+  .stat b{display:block;font-family:var(--mono);font-size:30px;letter-spacing:-.02em;line-height:1.1}
+  .stat.good b{color:var(--gr)} .stat.warn b{color:var(--am)}
+  .stat span{display:block;font-size:12.5px;color:var(--mut);margin-top:7px}
+
+  /* sections */
+  section{padding:44px 0;border-top:1px solid var(--line)}
+  h2{font-size:clamp(21px,3.2vw,27px);letter-spacing:-.01em;font-weight:750;margin-bottom:8px}
+  h3{font-size:16px;font-weight:700;margin:22px 0 8px}
+  p{color:var(--mut);max-width:70ch}
+  p+p{margin-top:12px}
+  ul{color:var(--mut);margin:12px 0 0 20px;max-width:70ch}
+  li{margin-bottom:7px}
+  strong{color:var(--fg);font-weight:650}
+  .flow{font-family:var(--mono);font-size:12.5px;color:var(--mut);background:var(--bg2);
+    border:1px solid var(--line);border-radius:13px;padding:16px;margin-top:20px;
+    overflow-x:auto;white-space:pre;line-height:1.9}
+  .flow i{color:var(--gr);font-style:normal}
+  .flow u{color:var(--cy);text-decoration:none}
+
+  pre{background:var(--bg2);border:1px solid var(--line);border-radius:13px;padding:15px 17px;
+    overflow-x:auto;margin-top:14px}
+  code{font-family:var(--mono);font-size:13px;color:var(--fg)}
+  p code,li code{background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:12.5px}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:14px;margin-top:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:20px}
+  .card h3{margin-top:0}
+  .card p{font-size:14px}
+  .num{font-family:var(--mono);font-size:12px;color:var(--cy);letter-spacing:.08em;text-transform:uppercase}
+
+  .tablewrap{overflow-x:auto;margin-top:18px}
+  table{width:100%;border-collapse:collapse;font-size:14.5px;min-width:430px}
+  th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line)}
+  th{font-size:11.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--mut);font-weight:650}
+  td:last-child{font-family:var(--mono);font-weight:700}
+  tr.hl td{color:var(--am)}
+  tr.hl td:last-child{color:var(--am)}
+
+  .note{border:1px solid var(--am);background:color-mix(in srgb,var(--am) 9%,transparent);
+    border-radius:13px;padding:15px 18px;margin-top:20px;font-size:14px;color:var(--fg)}
+  .note b{color:var(--am)}
+
+  footer{border-top:1px solid var(--line);padding:34px 0 60px;font-size:13px;color:var(--mut)}
+  footer a{color:var(--cy);text-decoration:none}
+  footer a:hover{text-decoration:underline}
+  .foot-links{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px}
+</style>
+</head>
+<body>
+<div class="orbs"><div class="orb a"></div><div class="orb b"></div></div>
+
+<header class="bar">
+  <div class="wrap">
+    <span class="logo">IzgoN</span>
+    <nav>
+      <a class="navlink" href="#install" data-i="nav_install"></a>
+      <a class="navlink" href="#numbers" data-i="nav_numbers"></a>
+      <a class="navlink" href="#limits" data-i="nav_limits"></a>
+      <a class="navlink" href="#guide" data-i="nav_guide"></a>
+      <select id="lang" aria-label="Language">
+        <option value="bs">Bosanski</option>
+        <option value="en">English</option>
+        <option value="de">Deutsch</option>
+        <option value="fr">Français</option>
+        <option value="ja">日本語</option>
+        <option value="zh">中文</option>
+      </select>
+      <button class="iconbtn" id="theme" aria-label="Theme">◐</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1><span data-i="h1a"></span> <em data-i="h1b"></em></h1>
+    <p class="lede" data-i="lede"></p>
+
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/izGamber/IZgoN/releases/latest" data-i="dl_win"></a>
+      <a class="btn" href="https://github.com/izGamber/IZgoN" data-i="dl_src"></a>
+      <a class="btn" href="https://izgon-api.onrender.com" data-i="dl_demo"></a>
+    </div>
+    <p class="sub" data-i="cta_sub"></p>
+
+    <div class="flow">   <span data-i="flow_a"></span>
+   {"t":21.5,"h":60}  ──►  IzgoN  ──►  <u>{"t":22.1}</u>   <span data-i="flow_b"></span>
+   {"t":21.5,"h":60}  ──►  IzgoN  ──►  <i>NO_CHANGE</i>    <span data-i="flow_c"></span></div>
+
+    <div class="stats">
+      <div class="stat good"><b>94.3%</b><span data-i="s1"></span></div>
+      <div class="stat warn"><b>35.3%</b><span data-i="s2"></span></div>
+      <div class="stat"><b>10 000</b><span data-i="s3"></span></div>
+      <div class="stat"><b>$29</b><span data-i="s4"></span></div>
+    </div>
+  </div>
+
+  <section id="what"><div class="wrap">
+    <h2 data-i="what_h"></h2>
+    <p data-i="what_p1"></p>
+    <p data-i="what_p2"></p>
+    <div class="cards">
+      <div class="card"><div class="num">01</div><h3 data-i="c1h"></h3><p data-i="c1p"></p></div>
+      <div class="card"><div class="num">02</div><h3 data-i="c2h"></h3><p data-i="c2p"></p></div>
+      <div class="card"><div class="num">03</div><h3 data-i="c3h"></h3><p data-i="c3p"></p></div>
+      <div class="card"><div class="num">04</div><h3 data-i="c4h"></h3><p data-i="c4p"></p></div>
+    </div>
+  </div></section>
+
+  <section id="who"><div class="wrap">
+    <h2 data-i="who_h"></h2>
+    <p data-i="who_p"></p>
+    <ul>
+      <li data-i="who1"></li><li data-i="who2"></li><li data-i="who3"></li><li data-i="who4"></li>
+    </ul>
+    <div class="note"><b data-i="who_not_b"></b> <span data-i="who_not"></span></div>
+  </div></section>
+
+  <section id="install"><div class="wrap">
+    <h2 data-i="inst_h"></h2>
+
+    <h3 data-i="inst1_h"></h3>
+    <p data-i="inst1_p"></p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/izGamber/IZgoN/releases/latest" data-i="dl_win"></a>
+    </div>
+
+    <h3 data-i="inst2_h"></h3>
+    <p data-i="inst2_p"></p>
+    <pre><code>docker run -p 8000:8000 -e DATAPULSE_API_KEY=change-me ghcr.io/izgamber/izgon:latest</code></pre>
+
+    <h3 data-i="inst3_h"></h3>
+    <p data-i="inst3_p"></p>
+    <pre><code>git clone https://github.com/izGamber/IZgoN.git
+cd IZgoN
+cp .env.example .env
+docker compose up -d</code></pre>
+    <p data-i="inst_after"></p>
+  </div></section>
+
+  <section id="numbers"><div class="wrap">
+    <h2 data-i="num_h"></h2>
+    <p data-i="num_p"></p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th data-i="th1"></th><th data-i="th2"></th><th data-i="th3"></th><th data-i="th4"></th>
+        </tr></thead>
+        <tbody>
+          <tr><td>5 %</td><td>759.2 KB</td><td>43.0 KB</td><td>94.3 %</td></tr>
+          <tr><td>20 %</td><td>758.2 KB</td><td>147.5 KB</td><td>80.5 %</td></tr>
+          <tr class="hl"><td>70 %</td><td>758.4 KB</td><td>490.4 KB</td><td>35.3 %</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note"><b data-i="num_note_b"></b> <span data-i="num_note"></span></div>
+
+    <h3 data-i="own_h"></h3>
+    <p data-i="own_p"></p>
+    <pre><code>python3 benchmark.py --payload-file your-reports.json</code></pre>
+    <p data-i="own_p2"></p>
+  </div></section>
+
+  <section id="limits"><div class="wrap">
+    <h2 data-i="lim_h"></h2>
+    <p data-i="lim_p"></p>
+    <ul>
+      <li data-i="l1"></li><li data-i="l2"></li><li data-i="l3"></li>
+      <li data-i="l4"></li><li data-i="l5"></li>
+    </ul>
+  </div></section>
+
+  <section id="price"><div class="wrap">
+    <h2 data-i="pr_h"></h2>
+    <p data-i="pr_p1"></p>
+    <p data-i="pr_p2"></p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/izGamber/IZgoN/releases/latest" data-i="dl_win"></a>
+      <a class="btn" href="https://github.com/izGamber/IZgoN#licence-and-price" data-i="pr_btn"></a>
+    </div>
+  </div></section>
+
+  <section id="guide"><div class="wrap">
+    <h2 data-i="g_h"></h2>
+    <p data-i="g_p1"></p>
+    <p data-i="g_p2"></p>
+    <div class="cta">
+      <a class="btn primary" href="https://socijalsistemdigital-bih.github.io/Vodic-dokumenata-tuzla/" data-i="g_btn"></a>
+    </div>
+  </div></section>
+</main>
+
+<footer><div class="wrap">
+  <div class="foot-links">
+    <a href="https://github.com/izGamber/IZgoN">GitHub</a>
+    <a href="https://github.com/izGamber/IZgoN/releases/latest" data-i="f_rel"></a>
+    <a href="https://github.com/izGamber/IZgoN/blob/main/BENCHMARK.md" data-i="f_bench"></a>
+    <a href="https://github.com/izGamber/IZgoN/blob/main/CHANGELOG.md" data-i="f_chg"></a>
+    <a href="https://izgon-api.onrender.com" data-i="f_demo"></a>
+    <a href="https://www.youtube.com/watch?v=5-w5LsfOFmE" data-i="f_vid"></a>
+  </div>
+  <p data-i="f_note"></p>
+  <p style="margin-top:10px">© 2026 Adnan Drndić · <span data-i="f_lic"></span></p>
+</div></footer>
+
+<script>
+const T = {
+bs:{
+ nav_install:"Instalacija", nav_numbers:"Brojke", nav_limits:"Granice", nav_guide:"Vodič",
+ h1a:"Tvoji uređaji šalju istu rečenicu", h1b:"milionima puta mjesečno.",
+ lede:"IzgoN pamti šta je svaki uređaj zadnje rekao i prosljeđuje samo ono što se promijenilo. Iste informacije, daleko manje podataka — i tačno prebrojano koliko si bajta prestao plaćati.",
+ dl_win:"Preuzmi za Windows", dl_src:"Kod na GitHubu", dl_demo:"Živi demo",
+ cta_sub:"Besplatno do 10.000 sinhronizacija. Bez naloga, bez kartice. Radi na tvom serveru.",
+ flow_a:"stanje uređaja           izmijenjeno", flow_b:"samo delta", flow_c:"nula bajta",
+ s1:"ušteda pri 5 % promjene", s2:"pri 70 % — tu prestaje da se isplati",
+ s3:"besplatnih sinhronizacija", s4:"jednokratno, bez pretplate",
+ what_h:"Šta je ovo, tačno",
+ what_p1:"IzgoN je server, ne obična aplikacija. Stoji između tvojih uređaja i tvog backenda. Svaki uređaj pošalje svoje trenutno stanje; IzgoN ga uporedi sa zadnjim koje je vidio za taj uređaj i vrati jedno od tri: NO_CHANGE (nula bajta), minimalnu deltu, ili cijelo stanje kad bi delta bila veća od njega.",
+ what_p2:"Svaki poziv se bilježi, pa dashboard pokazuje jedinu brojku koja je bitna: koliko bi bajta poslao bez IzgoN-a naspram koliko si stvarno poslao.",
+ c1h:"Server pamti umjesto uređaja", c1p:"Uređaji ostaju bez stanja. IzgoN drži zadnje poznato stanje za svaki čvor.",
+ c2h:"Licenca bez zvanja kući", c2p:"Ključ se provjerava lokalno, HMAC-SHA256. Tvoj server nikad ne kontaktira licencni server.",
+ c3h:"Dnevnik i dashboard", c3p:"Svaki sync je zapisan. Ušteda se čita uživo, ne procjenjuje.",
+ c4h:"Brojka za onoga ko plaća račun", c4p:"Bajtovi izbjegnuti, u broju koji možeš staviti pred šefa.",
+ who_h:"Kome ovo koristi", who_p:"Isplati se ako imaš mnogo čvorova koji često javljaju stanje, a većina tog stanja se ne mijenja između izvještaja:",
+ who1:"IoT i senzorske flote na mobilnim ili satelitskim SIM karticama",
+ who2:"terenski uređaji na skupim ili sporim vezama",
+ who3:"agenti za nadzor koji javljaju svakih par sekundi",
+ who4:"serveri igara ili simulacija koji sinhronizuju stanje entiteta",
+ who_not_b:"Neće ti koristiti ako",
+ who_not:"su ti paketi mali, rijetki, ili se mijenjaju u cijelosti svaki put. Izmjeri na svojim podacima prije nego išta platiš.",
+ inst_h:"Instalacija — tri načina",
+ inst1_h:"1. Windows, dvoklik", inst1_p:"Skini paket, raspakuj i dvoklikni IzgoN-Setup.cmd. Provjeri Docker, generiše ti tajni ključ, pokrene sve i otvori dashboard. Ne dira ništa izvan jedne fascikle.",
+ inst2_h:"2. Jedna komanda", inst2_p:"Slika je objavljena — nema kloniranja ni građenja:",
+ inst3_h:"3. Sa Redisom (preporučeno)", inst3_p:"Ovako baze stanja preživljavaju restart:",
+ inst_after:"Dashboard je na http://localhost:8000.",
+ num_h:"Brojke, i gdje ne valjaju", num_p:"Sve izmjereno na živoj instanci, ponovljivo komandama iz BENCHMARK.md. 50 čvorova × 100 izvještaja = 5.000 sinhronizacija po prolazu.",
+ th1:"Stopa promjene", th2:"Bez IzgoN-a", th3:"Sa IzgoN-om", th4:"Ušteda",
+ num_note_b:"Pročitaj zadnji red.", num_note:"Kad se skoro svaki izvještaj razlikuje od prethodnog, ušteda padne na 35,3 % i najveći dio razloga da ovo uopšte pokrećeš nestaje. To je iskrena granica alata i zato stoji ovdje, a ne sakriveno.",
+ own_h:"Ne vjeruj mojoj brojci — izmjeri svoju", own_p:"Izvezi nekoliko hiljada stvarnih izvještaja svojih uređaja (JSON niz ili JSON Lines) i pusti:",
+ own_p2:"Svaki uređaj ponovi svoj stvarni niz, svojim redom, a stopa promjene se mjeri iz tvojih podataka umjesto da se pretpostavi. Koristi samo standardnu Python biblioteku. Ako je broj mali za tvoje pakete — nemoj kupiti.",
+ lim_h:"Granice, rečeno unaprijed", lim_p:"Naći ćeš ih ionako, pa neka pišu ovdje:",
+ l1:"Liste se porede u cjelini, ne stavku po stavku. Promijeni jednu stavku u nizu od 500 i šalje se cijeli niz.",
+ l2:"Kad paket smanji broj polja, oznake brisanja mogu biti veće od onoga što je ostalo — tada IzgoN pošalje cijelo stanje. Ne plaćaš više, ali ni ne štediš na tom syncu.",
+ l3:"Prvi izvještaj svakog čvora uvijek ide u cjelini. Nema se sa čim uporediti.",
+ l4:"Jedna instanca. Nema klasterisanja.",
+ l5:"Nema klijentskog SDK-a. Integracija je običan HTTP POST; u repou je referentni klijent od šezdesetak linija.",
+ pr_h:"Cijena", pr_p1:"Besplatno do 10.000 sinhronizacija, bez ključa i bez naloga — dovoljno da instaliraš, pustiš benchmark na svojim podacima i odlučiš.",
+ pr_p2:"Preko toga je jednokratna licenca od 29 $. Bez pretplate, bez zvanja kući. Kod je javan i prije i poslije plaćanja — plaćaš pravo na komercijalnu upotrebu preko besplatnog praga.",
+ pr_btn:"Uslovi licence",
+ g_h:"Vodič do dokumenata — CSR Tuzla", g_p1:"Drugi projekat istog autora: besplatna web aplikacija koja građanima Tuzlanskog kantona pokazuje koji dokumenti trebaju za novčanu pomoć i zdravstveno osiguranje, i kojim redom obići institucije.",
+ g_p2:"Ne treba se instalirati. Otvori u pregledniku, na telefonu ili računaru.",
+ g_btn:"Otvori vodič",
+ f_rel:"Preuzimanje", f_bench:"Benchmark", f_chg:"Promjene", f_demo:"Demo", f_vid:"Video",
+ f_note:"IzgoN je source-available, nije open source: možeš ga čitati, pokretati i mijenjati za sebe. Preprodaja i hostovanje kao usluga trećim licima traže poseban dogovor.",
+ f_lic:"Vidi LICENSE.md"
+},
+en:{
+ nav_install:"Install", nav_numbers:"Numbers", nav_limits:"Limits", nav_guide:"Guide",
+ h1a:"Your devices send the same sentence", h1b:"millions of times a month.",
+ lede:"IzgoN remembers what each device last said and forwards only what changed. Same information, far less data — and an exact count of the bytes you stopped paying for.",
+ dl_win:"Download for Windows", dl_src:"Source on GitHub", dl_demo:"Live demo",
+ cta_sub:"Free up to 10,000 syncs. No account, no card. Runs on your own server.",
+ flow_a:"device state              changed", flow_b:"delta only", flow_c:"zero bytes",
+ s1:"saved at a 5% change rate", s2:"at 70% — where it stops being worth it",
+ s3:"free syncs, no key needed", s4:"one-time, no subscription",
+ what_h:"What this actually is",
+ what_p1:"IzgoN is a server, not a desktop app. It sits between your devices and your backend. Each device POSTs its current state; IzgoN compares it against the last state it saw for that device and returns one of three things: NO_CHANGE (zero bytes), a minimal delta, or the whole state when a delta would be bigger than the state it replaces.",
+ what_p2:"Every call is logged, so the dashboard shows the one number that matters: bytes you would have sent versus bytes you actually sent.",
+ c1h:"The server remembers, not the device", c1p:"Devices stay stateless. IzgoN holds the last known state per node.",
+ c2h:"Licensing with no phone-home", c2p:"The key is verified locally with HMAC-SHA256. Your server never contacts a licence server.",
+ c3h:"Event log and dashboard", c3p:"Every sync is recorded. The saving is read live, not estimated.",
+ c4h:"A number for whoever pays", c4p:"Bytes avoided, in a figure you can put in front of the person paying the data bill.",
+ who_h:"Who this is for", who_p:"It pays off when you have many nodes reporting often, and most of that state does not change between reports:",
+ who1:"IoT and sensor fleets on metered cellular or satellite SIMs",
+ who2:"field devices on expensive or constrained links",
+ who3:"monitoring agents polling every few seconds",
+ who4:"game or simulation servers syncing entity state",
+ who_not_b:"It will not help if",
+ who_not:"your payloads are small, infrequent, or change completely every time. Measure it on your own data before you pay for anything.",
+ inst_h:"Install — three ways",
+ inst1_h:"1. Windows, double-click", inst1_p:"Download the package, unzip it and double-click IzgoN-Setup.cmd. It checks Docker, generates a secret key, starts everything and opens the dashboard. It touches nothing outside one folder.",
+ inst2_h:"2. One command", inst2_p:"The image is published — no cloning, no building:",
+ inst3_h:"3. With Redis (recommended)", inst3_p:"This is how the per-node baselines survive a restart:",
+ inst_after:"The dashboard is on http://localhost:8000.",
+ num_h:"The numbers, including where they fail", num_p:"All measured against a running instance and reproducible with the commands in BENCHMARK.md. 50 nodes × 100 reports = 5,000 syncs per run.",
+ th1:"Change rate", th2:"Without IzgoN", th3:"With IzgoN", th4:"Saved",
+ num_note_b:"Read the last row.", num_note:"When almost every report differs from the one before it, the saving falls to 35.3% and most of the reason to run this disappears. That is the honest boundary of the tool, which is why it is here rather than hidden.",
+ own_h:"Don't trust my number — measure yours", own_p:"Export a few thousand real reports from your devices (JSON array or JSON Lines) and run:",
+ own_p2:"Each device replays its own real sequence in its real order, and the change rate is measured from your data instead of assumed. Standard library only. If the number is small for your payloads, don't buy it.",
+ lim_h:"Limits, stated up front", lim_p:"You would find them anyway, so they live here:",
+ l1:"Lists are compared whole rather than element by element. Change one entry in a 500-item array and the whole array is sent.",
+ l2:"When a payload loses fields, the deletion markers can outweigh what is left — IzgoN then sends the whole state. You never pay more, but you save nothing on that sync either.",
+ l3:"The first report from any node is always sent in full. There is nothing to compare it against.",
+ l4:"Single instance. There is no clustering.",
+ l5:"No client SDK. Integration is a plain HTTP POST; a ~60-line reference client ships in the repo.",
+ pr_h:"Price", pr_p1:"Free up to 10,000 syncs, with no key and no account — enough to install it, run the benchmark on your own data and decide.",
+ pr_p2:"Past that it is a one-time $29 licence. No subscription, no phone-home. The code is public before and after you pay; what you buy is the right to run it commercially past the free tier.",
+ pr_btn:"Licence terms",
+ g_h:"Document guide — CSR Tuzla", g_p1:"Another project by the same author: a free web app that shows residents of Tuzla Canton which documents they need for financial aid and health insurance, and in what order to visit the institutions.",
+ g_p2:"Nothing to install. Open it in a browser, on a phone or a computer.",
+ g_btn:"Open the guide",
+ f_rel:"Download", f_bench:"Benchmark", f_chg:"Changelog", f_demo:"Demo", f_vid:"Video",
+ f_note:"IzgoN is source-available, not open source: you can read, run and modify it for yourself. Reselling it or hosting it as a service for third parties needs a separate agreement.",
+ f_lic:"See LICENSE.md"
+},
+de:{
+ nav_install:"Installation", nav_numbers:"Zahlen", nav_limits:"Grenzen", nav_guide:"Leitfaden",
+ h1a:"Ihre Geräte senden denselben Satz", h1b:"millionenfach pro Monat.",
+ lede:"IzgoN merkt sich, was jedes Gerät zuletzt gemeldet hat, und leitet nur das Geänderte weiter. Gleiche Information, deutlich weniger Daten — und eine exakte Zählung der Bytes, die Sie nicht mehr bezahlen.",
+ dl_win:"Für Windows herunterladen", dl_src:"Quellcode auf GitHub", dl_demo:"Live-Demo",
+ cta_sub:"Kostenlos bis 10.000 Syncs. Kein Konto, keine Karte. Läuft auf Ihrem eigenen Server.",
+ flow_a:"Gerätezustand            geändert", flow_b:"nur Delta", flow_c:"null Bytes",
+ s1:"gespart bei 5 % Änderungsrate", s2:"bei 70 % — hier lohnt es sich nicht mehr",
+ s3:"kostenlose Syncs", s4:"einmalig, kein Abo",
+ what_h:"Was das genau ist",
+ what_p1:"IzgoN ist ein Server, keine Desktop-Anwendung. Er sitzt zwischen Ihren Geräten und Ihrem Backend. Jedes Gerät sendet seinen aktuellen Zustand; IzgoN vergleicht ihn mit dem zuletzt gesehenen und antwortet mit einem von drei Dingen: NO_CHANGE (null Bytes), einem minimalen Delta, oder dem vollen Zustand, wenn das Delta größer wäre.",
+ what_p2:"Jeder Aufruf wird protokolliert, damit das Dashboard die einzig wichtige Zahl zeigt: Bytes, die Sie gesendet hätten, gegen Bytes, die Sie tatsächlich gesendet haben.",
+ c1h:"Der Server merkt sich, nicht das Gerät", c1p:"Geräte bleiben zustandslos. IzgoN hält den letzten bekannten Zustand pro Knoten.",
+ c2h:"Lizenz ohne Phone-Home", c2p:"Der Schlüssel wird lokal per HMAC-SHA256 geprüft. Ihr Server kontaktiert nie einen Lizenzserver.",
+ c3h:"Ereignisprotokoll und Dashboard", c3p:"Jeder Sync wird aufgezeichnet. Die Ersparnis wird live gelesen, nicht geschätzt.",
+ c4h:"Eine Zahl für den, der zahlt", c4p:"Vermiedene Bytes — als Zahl, die Sie vorlegen können.",
+ who_h:"Für wen das ist", who_p:"Es lohnt sich, wenn viele Knoten häufig melden und der Zustand sich zwischen den Meldungen meist nicht ändert:",
+ who1:"IoT- und Sensorflotten auf getakteten Mobilfunk- oder Satelliten-SIMs",
+ who2:"Feldgeräte an teuren oder schmalen Verbindungen",
+ who3:"Monitoring-Agenten, die alle paar Sekunden abfragen",
+ who4:"Spiel- oder Simulationsserver, die Entitätszustände synchronisieren",
+ who_not_b:"Es hilft nicht, wenn",
+ who_not:"Ihre Nutzdaten klein oder selten sind oder sich jedes Mal vollständig ändern. Messen Sie mit Ihren eigenen Daten, bevor Sie zahlen.",
+ inst_h:"Installation — drei Wege",
+ inst1_h:"1. Windows, Doppelklick", inst1_p:"Paket herunterladen, entpacken, IzgoN-Setup.cmd doppelklicken. Es prüft Docker, erzeugt einen geheimen Schlüssel, startet alles und öffnet das Dashboard. Es berührt nichts außerhalb eines Ordners.",
+ inst2_h:"2. Ein Befehl", inst2_p:"Das Image ist veröffentlicht — kein Klonen, kein Bauen:",
+ inst3_h:"3. Mit Redis (empfohlen)", inst3_p:"So überstehen die Zustände pro Knoten einen Neustart:",
+ inst_after:"Das Dashboard liegt auf http://localhost:8000.",
+ num_h:"Die Zahlen, samt ihrer Grenze", num_p:"Alles an einer laufenden Instanz gemessen und mit den Befehlen aus BENCHMARK.md reproduzierbar. 50 Knoten × 100 Meldungen = 5.000 Syncs pro Lauf.",
+ th1:"Änderungsrate", th2:"Ohne IzgoN", th3:"Mit IzgoN", th4:"Gespart",
+ num_note_b:"Lesen Sie die letzte Zeile.", num_note:"Wenn sich fast jede Meldung von der vorherigen unterscheidet, fällt die Ersparnis auf 35,3 % und der Grund, das zu betreiben, verschwindet weitgehend. Das ist die ehrliche Grenze des Werkzeugs — deshalb steht sie hier und nicht versteckt.",
+ own_h:"Glauben Sie meiner Zahl nicht — messen Sie Ihre", own_p:"Exportieren Sie einige tausend echte Meldungen Ihrer Geräte (JSON-Array oder JSON Lines) und führen Sie aus:",
+ own_p2:"Jedes Gerät spielt seine echte Sequenz in echter Reihenfolge ab, und die Änderungsrate wird aus Ihren Daten gemessen statt angenommen. Nur Standardbibliothek. Ist die Zahl klein, kaufen Sie es nicht.",
+ lim_h:"Grenzen, vorab genannt", lim_p:"Sie finden sie ohnehin, also stehen sie hier:",
+ l1:"Listen werden als Ganzes verglichen, nicht Element für Element. Ein geänderter Eintrag in einem 500er-Array sendet das ganze Array.",
+ l2:"Verliert die Nutzlast Felder, können die Löschmarken schwerer wiegen als der Rest — dann sendet IzgoN den vollen Zustand. Sie zahlen nie mehr, sparen bei diesem Sync aber auch nichts.",
+ l3:"Die erste Meldung eines Knotens geht immer vollständig raus. Es gibt nichts zum Vergleichen.",
+ l4:"Eine Instanz. Kein Clustering.",
+ l5:"Kein Client-SDK. Die Integration ist ein einfacher HTTP-POST; ein Referenzclient mit rund 60 Zeilen liegt im Repo.",
+ pr_h:"Preis", pr_p1:"Kostenlos bis 10.000 Syncs, ohne Schlüssel und ohne Konto — genug, um zu installieren, den Benchmark mit eigenen Daten zu fahren und zu entscheiden.",
+ pr_p2:"Darüber hinaus eine einmalige Lizenz für 29 $. Kein Abo, kein Phone-Home. Der Code ist vorher wie nachher öffentlich; Sie kaufen das Recht auf kommerziellen Betrieb über die Gratisgrenze hinaus.",
+ pr_btn:"Lizenzbedingungen",
+ g_h:"Dokumentenleitfaden — CSR Tuzla", g_p1:"Ein weiteres Projekt desselben Autors: eine kostenlose Web-App, die Einwohnern des Kantons Tuzla zeigt, welche Dokumente sie für Sozialhilfe und Krankenversicherung brauchen und in welcher Reihenfolge sie die Ämter aufsuchen.",
+ g_p2:"Nichts zu installieren. Im Browser öffnen, am Telefon oder am Rechner.",
+ g_btn:"Leitfaden öffnen",
+ f_rel:"Download", f_bench:"Benchmark", f_chg:"Changelog", f_demo:"Demo", f_vid:"Video",
+ f_note:"IzgoN ist source-available, nicht Open Source: Sie dürfen ihn lesen, betreiben und für sich ändern. Weiterverkauf oder Hosting als Dienst für Dritte erfordert eine gesonderte Vereinbarung.",
+ f_lic:"Siehe LICENSE.md"
+},
+fr:{
+ nav_install:"Installation", nav_numbers:"Chiffres", nav_limits:"Limites", nav_guide:"Guide",
+ h1a:"Vos appareils envoient la même phrase", h1b:"des millions de fois par mois.",
+ lede:"IzgoN retient ce que chaque appareil a dit en dernier et ne transmet que ce qui a changé. Même information, bien moins de données — et un décompte exact des octets que vous cessez de payer.",
+ dl_win:"Télécharger pour Windows", dl_src:"Code sur GitHub", dl_demo:"Démo en ligne",
+ cta_sub:"Gratuit jusqu'à 10 000 synchronisations. Sans compte, sans carte. Sur votre propre serveur.",
+ flow_a:"état de l'appareil        modifié", flow_b:"delta seulement", flow_c:"zéro octet",
+ s1:"économisés à 5 % de changement", s2:"à 70 % — là où cela cesse d'être rentable",
+ s3:"synchronisations gratuites", s4:"paiement unique, sans abonnement",
+ what_h:"Ce que c'est exactement",
+ what_p1:"IzgoN est un serveur, pas une application de bureau. Il se place entre vos appareils et votre backend. Chaque appareil envoie son état courant ; IzgoN le compare au dernier état vu et renvoie l'une de trois choses : NO_CHANGE (zéro octet), un delta minimal, ou l'état complet lorsque le delta serait plus gros.",
+ what_p2:"Chaque appel est journalisé, si bien que le tableau de bord affiche le seul chiffre qui compte : les octets que vous auriez envoyés contre ceux que vous avez réellement envoyés.",
+ c1h:"C'est le serveur qui retient", c1p:"Les appareils restent sans état. IzgoN garde le dernier état connu par nœud.",
+ c2h:"Licence sans appel maison", c2p:"La clé est vérifiée localement en HMAC-SHA256. Votre serveur ne contacte jamais un serveur de licence.",
+ c3h:"Journal et tableau de bord", c3p:"Chaque synchronisation est enregistrée. L'économie se lit en direct, elle ne s'estime pas.",
+ c4h:"Un chiffre pour celui qui paie", c4p:"Les octets évités, dans un chiffre présentable à qui règle la facture.",
+ who_h:"À qui cela s'adresse", who_p:"C'est rentable quand de nombreux nœuds rapportent souvent et que l'essentiel de l'état ne change pas d'un rapport à l'autre :",
+ who1:"flottes IoT et capteurs sur SIM cellulaires ou satellites facturées au volume",
+ who2:"appareils de terrain sur liaisons coûteuses ou contraintes",
+ who3:"agents de supervision qui interrogent toutes les quelques secondes",
+ who4:"serveurs de jeu ou de simulation synchronisant l'état des entités",
+ who_not_b:"Cela n'aidera pas si",
+ who_not:"vos charges utiles sont petites, rares, ou changent entièrement à chaque fois. Mesurez sur vos propres données avant de payer quoi que ce soit.",
+ inst_h:"Installation — trois voies",
+ inst1_h:"1. Windows, double-clic", inst1_p:"Téléchargez le paquet, décompressez-le et double-cliquez IzgoN-Setup.cmd. Il vérifie Docker, génère une clé secrète, démarre le tout et ouvre le tableau de bord. Il ne touche rien hors d'un seul dossier.",
+ inst2_h:"2. Une commande", inst2_p:"L'image est publiée — ni clonage ni compilation :",
+ inst3_h:"3. Avec Redis (recommandé)", inst3_p:"C'est ainsi que les états par nœud survivent à un redémarrage :",
+ inst_after:"Le tableau de bord est sur http://localhost:8000.",
+ num_h:"Les chiffres, y compris leur limite", num_p:"Tout mesuré sur une instance en fonctionnement et reproductible avec les commandes de BENCHMARK.md. 50 nœuds × 100 rapports = 5 000 synchronisations par passage.",
+ th1:"Taux de changement", th2:"Sans IzgoN", th3:"Avec IzgoN", th4:"Économisé",
+ num_note_b:"Lisez la dernière ligne.", num_note:"Quand presque chaque rapport diffère du précédent, l'économie tombe à 35,3 % et la raison même de faire tourner cela disparaît en grande partie. C'est la limite honnête de l'outil, et c'est pourquoi elle figure ici plutôt que cachée.",
+ own_h:"Ne croyez pas mon chiffre — mesurez le vôtre", own_p:"Exportez quelques milliers de rapports réels de vos appareils (tableau JSON ou JSON Lines) et lancez :",
+ own_p2:"Chaque appareil rejoue sa vraie séquence dans son vrai ordre, et le taux de changement est mesuré à partir de vos données au lieu d'être supposé. Bibliothèque standard uniquement. Si le chiffre est faible chez vous, ne l'achetez pas.",
+ lim_h:"Limites, annoncées d'avance", lim_p:"Vous les trouveriez de toute façon, alors les voici :",
+ l1:"Les listes sont comparées en bloc, pas élément par élément. Un seul élément modifié dans un tableau de 500 renvoie tout le tableau.",
+ l2:"Quand la charge utile perd des champs, les marqueurs de suppression peuvent peser plus que le reste — IzgoN envoie alors l'état complet. Vous ne payez jamais plus, mais vous n'économisez rien sur cette synchronisation.",
+ l3:"Le premier rapport d'un nœud part toujours en entier. Il n'y a rien à quoi le comparer.",
+ l4:"Instance unique. Pas de mise en grappe.",
+ l5:"Pas de SDK client. L'intégration est un simple POST HTTP ; un client de référence d'une soixantaine de lignes est fourni dans le dépôt.",
+ pr_h:"Prix", pr_p1:"Gratuit jusqu'à 10 000 synchronisations, sans clé et sans compte — de quoi installer, lancer le benchmark sur vos données et décider.",
+ pr_p2:"Au-delà, licence unique à 29 $. Sans abonnement, sans appel maison. Le code est public avant comme après ; ce que vous achetez est le droit de l'exploiter commercialement au-delà du palier gratuit.",
+ pr_btn:"Conditions de licence",
+ g_h:"Guide des documents — CSR Tuzla", g_p1:"Un autre projet du même auteur : une application web gratuite qui indique aux habitants du canton de Tuzla quels documents sont nécessaires pour l'aide financière et l'assurance maladie, et dans quel ordre visiter les institutions.",
+ g_p2:"Rien à installer. Ouvrez-la dans un navigateur, sur téléphone ou ordinateur.",
+ g_btn:"Ouvrir le guide",
+ f_rel:"Téléchargement", f_bench:"Benchmark", f_chg:"Journal", f_demo:"Démo", f_vid:"Vidéo",
+ f_note:"IzgoN est source-available, pas open source : vous pouvez le lire, l'exécuter et le modifier pour vous. La revente ou l'hébergement comme service pour des tiers nécessite un accord distinct.",
+ f_lic:"Voir LICENSE.md"
+},
+ja:{
+ nav_install:"導入", nav_numbers:"数値", nav_limits:"限界", nav_guide:"ガイド",
+ h1a:"あなたの機器は同じ内容を", h1b:"毎月数百万回も送っています。",
+ lede:"IzgoN は各機器が最後に送った状態を覚えており、変わった部分だけを転送します。情報は同じ、データ量は大幅に減少し、支払わずに済んだバイト数を正確に数えます。",
+ dl_win:"Windows 版をダウンロード", dl_src:"GitHub のソース", dl_demo:"ライブデモ",
+ cta_sub:"10,000 回の同期まで無料。アカウント不要、カード不要。自分のサーバーで動きます。",
+ flow_a:"機器の状態                変化あり", flow_b:"差分のみ", flow_c:"0 バイト",
+ s1:"変化率 5 % での削減", s2:"70 % では割に合わなくなる",
+ s3:"無料の同期回数", s4:"買い切り、サブスクなし",
+ what_h:"これは何か",
+ what_p1:"IzgoN はサーバーであり、デスクトップアプリではありません。機器とバックエンドの間に入ります。各機器が現在の状態を送ると、IzgoN はその機器について最後に見た状態と比較し、次の 3 つのいずれかを返します。NO_CHANGE（0 バイト）、最小の差分、あるいは差分の方が大きくなる場合は状態そのもの。",
+ what_p2:"すべての呼び出しが記録されるため、ダッシュボードは唯一重要な数値を示します。送るはずだったバイト数と、実際に送ったバイト数です。",
+ c1h:"覚えるのはサーバー", c1p:"機器は状態を持ちません。IzgoN がノードごとの最新状態を保持します。",
+ c2h:"外部通信なしのライセンス", c2p:"鍵は HMAC-SHA256 でローカル検証。ライセンスサーバーへの接続は一切ありません。",
+ c3h:"イベントログとダッシュボード", c3p:"すべての同期を記録。削減量は推定ではなく実測です。",
+ c4h:"支払う人に見せる数値", c4p:"回避できたバイト数を、そのまま提示できる形で。",
+ who_h:"向いている用途", who_p:"多数のノードが頻繁に報告し、その状態がほとんど変わらない場合に効きます。",
+ who1:"従量課金のモバイル／衛星 SIM 上の IoT・センサー群",
+ who2:"高価または細い回線上の現場機器",
+ who3:"数秒ごとに問い合わせる監視エージェント",
+ who4:"エンティティ状態を同期するゲーム・シミュレーションサーバー",
+ who_not_b:"効かないのは",
+ who_not:"ペイロードが小さい、頻度が低い、あるいは毎回全体が変わる場合です。支払う前に自分のデータで測ってください。",
+ inst_h:"導入 — 3 つの方法",
+ inst1_h:"1. Windows、ダブルクリック", inst1_p:"パッケージをダウンロードして展開し、IzgoN-Setup.cmd をダブルクリック。Docker を確認し、秘密鍵を生成し、起動してダッシュボードを開きます。1 つのフォルダー以外には触れません。",
+ inst2_h:"2. コマンド 1 行", inst2_p:"イメージは公開済み。クローンもビルドも不要です。",
+ inst3_h:"3. Redis と一緒（推奨）", inst3_p:"再起動してもノードごとの状態が残る構成です。",
+ inst_after:"ダッシュボードは http://localhost:8000 です。",
+ num_h:"数値と、その限界", num_p:"すべて稼働中のインスタンスで実測し、BENCHMARK.md のコマンドで再現できます。50 ノード × 100 報告 = 1 回あたり 5,000 同期。",
+ th1:"変化率", th2:"IzgoN なし", th3:"IzgoN あり", th4:"削減",
+ num_note_b:"最後の行を読んでください。", num_note:"報告のほとんどが毎回異なる場合、削減は 35.3 % まで下がり、これを動かす理由の大半は消えます。これがこのツールの正直な限界であり、だからこそ隠さずここに書いています。",
+ own_h:"私の数値ではなく、あなたの数値を", own_p:"実際の報告を数千件エクスポートし（JSON 配列または JSON Lines）、実行してください。",
+ own_p2:"各機器が実際の順序で実際の系列を再生し、変化率は仮定ではなくあなたのデータから測定されます。標準ライブラリのみ。数値が小さければ買わないでください。",
+ lim_h:"先に述べる限界", lim_p:"どうせ見つかるので、ここに書きます。",
+ l1:"リストは要素単位ではなく全体で比較します。500 件の配列の 1 件が変わると配列全体を送ります。",
+ l2:"項目が減ると削除マーカーが残りより重くなることがあり、その場合は状態全体を送ります。余分に払うことはありませんが、その同期では削減もありません。",
+ l3:"各ノードの最初の報告は常に全体を送ります。比較対象がないためです。",
+ l4:"単一インスタンス。クラスタリングはありません。",
+ l5:"クライアント SDK はありません。連携は素の HTTP POST で、約 60 行の参考実装がリポジトリにあります。",
+ pr_h:"価格", pr_p1:"10,000 回の同期まで無料。鍵もアカウントも不要で、導入して自分のデータでベンチマークを回し、判断するには十分です。",
+ pr_p2:"それを超えると買い切り 29 ドル。サブスクなし、外部通信なし。コードは支払いの前後どちらでも公開されています。購入するのは無料枠を超えて商用利用する権利です。",
+ pr_btn:"ライセンス条項",
+ g_h:"書類ガイド — CSR トゥズラ", g_p1:"同じ作者による別のプロジェクト。トゥズラ県の住民が生活支援や健康保険に必要な書類と、機関を回る順序を確認できる無料の Web アプリです。",
+ g_p2:"インストール不要。スマートフォンでもパソコンでも、ブラウザーで開くだけです。",
+ g_btn:"ガイドを開く",
+ f_rel:"ダウンロード", f_bench:"ベンチマーク", f_chg:"変更履歴", f_demo:"デモ", f_vid:"動画",
+ f_note:"IzgoN はソース公開型であり、オープンソースではありません。読む・動かす・自分用に改変することはできます。再販や第三者向けのホスティングには別途合意が必要です。",
+ f_lic:"LICENSE.md を参照"
+},
+zh:{
+ nav_install:"安装", nav_numbers:"数据", nav_limits:"局限", nav_guide:"指南",
+ h1a:"你的设备每月把同一句话", h1b:"发送数百万次。",
+ lede:"IzgoN 记住每台设备上次说了什么，只转发发生变化的部分。信息相同，数据量大幅减少——并精确计算出你不再支付的字节数。",
+ dl_win:"下载 Windows 版", dl_src:"GitHub 源码", dl_demo:"在线演示",
+ cta_sub:"10,000 次同步以内免费。无需账号，无需银行卡。运行在你自己的服务器上。",
+ flow_a:"设备状态                  已变化", flow_b:"仅增量", flow_c:"零字节",
+ s1:"变化率 5% 时节省", s2:"变化率 70% 时已不划算",
+ s3:"免费同步次数", s4:"一次性付费，无订阅",
+ what_h:"这到底是什么",
+ what_p1:"IzgoN 是一台服务器，不是桌面应用。它位于设备与后端之间。每台设备提交当前状态；IzgoN 将其与该设备上次的状态比较，返回三者之一：NO_CHANGE（零字节）、最小增量，或者当增量比状态本身更大时返回完整状态。",
+ what_p2:"每次调用都会记录，因此仪表盘显示唯一重要的数字：本应发送的字节数与实际发送的字节数。",
+ c1h:"记忆在服务器，不在设备", c1p:"设备保持无状态。IzgoN 为每个节点保存最后已知状态。",
+ c2h:"离线校验的授权", c2p:"密钥使用 HMAC-SHA256 本地校验。你的服务器从不联系授权服务器。",
+ c3h:"事件日志与仪表盘", c3p:"每次同步都被记录。节省量是实时读取的，不是估算的。",
+ c4h:"给付账的人一个数字", c4p:"避免的字节数，可以直接摆在付流量费的人面前。",
+ who_h:"适合谁", who_p:"当大量节点频繁上报、而其中大部分状态在两次上报之间没有变化时，才划算：",
+ who1:"按流量计费的蜂窝或卫星 SIM 上的物联网与传感器集群",
+ who2:"处于昂贵或受限链路上的现场设备",
+ who3:"每隔几秒轮询一次的监控代理",
+ who4:"同步实体状态的游戏或仿真服务器",
+ who_not_b:"以下情况没有帮助：",
+ who_not:"载荷很小、上报不频繁，或每次都完全改变。付费之前，请用你自己的数据测量。",
+ inst_h:"安装 — 三种方式",
+ inst1_h:"1. Windows，双击即可", inst1_p:"下载压缩包，解压后双击 IzgoN-Setup.cmd。它会检查 Docker、生成密钥、启动服务并打开仪表盘，且只在一个文件夹内操作。",
+ inst2_h:"2. 一条命令", inst2_p:"镜像已发布——无需克隆，无需构建：",
+ inst3_h:"3. 搭配 Redis（推荐）", inst3_p:"这样每个节点的基线状态才能在重启后保留：",
+ inst_after:"仪表盘位于 http://localhost:8000。",
+ num_h:"数据，以及它失效的地方", num_p:"全部在运行中的实例上实测，可用 BENCHMARK.md 中的命令复现。50 个节点 × 100 次上报 = 每轮 5,000 次同步。",
+ th1:"变化率", th2:"不用 IzgoN", th3:"使用 IzgoN", th4:"节省",
+ num_note_b:"请读最后一行。", num_note:"当几乎每次上报都与上一次不同时，节省降到 35.3%，运行它的大部分理由也就消失了。这是这个工具诚实的边界，所以写在这里，而不是藏起来。",
+ own_h:"别信我的数字——测你自己的", own_p:"导出你设备几千条真实上报记录（JSON 数组或 JSON Lines），然后运行：",
+ own_p2:"每台设备按真实顺序重放自己的真实序列，变化率来自你的数据实测而非假设。仅用标准库。如果对你的载荷来说数字很小，就别买。",
+ lim_h:"事先说明的局限", lim_p:"反正你也会发现，所以写在这里：",
+ l1:"列表整体比较，而非逐元素比较。500 项数组中改动一项，整个数组都会发送。",
+ l2:"当载荷字段减少时，删除标记可能比剩下的内容还大——此时 IzgoN 发送完整状态。你不会多付，但那次同步也不会节省。",
+ l3:"任何节点的第一次上报总是完整发送，因为没有可比较的对象。",
+ l4:"单实例，没有集群。",
+ l5:"没有客户端 SDK。集成就是普通的 HTTP POST；仓库中附有约 60 行的参考客户端。",
+ pr_h:"价格", pr_p1:"10,000 次同步以内免费，无需密钥和账号——足够你安装、用自己的数据跑基准测试并做决定。",
+ pr_p2:"超出后是一次性 29 美元授权。无订阅，无回连。付费前后代码都是公开的；你购买的是在免费额度之外商用运行的权利。",
+ pr_btn:"授权条款",
+ g_h:"文件指南 — CSR 图兹拉", g_p1:"同一作者的另一个项目：一个免费的网页应用，向图兹拉州居民说明申请生活补助和医疗保险需要哪些文件，以及按什么顺序走哪些机构。",
+ g_p2:"无需安装。在手机或电脑的浏览器中打开即可。",
+ g_btn:"打开指南",
+ f_rel:"下载", f_bench:"基准测试", f_chg:"更新日志", f_demo:"演示", f_vid:"视频",
+ f_note:"IzgoN 是源码可见，而非开源：你可以阅读、运行并为自己修改。转售或作为服务托管给第三方需要另行约定。",
+ f_lic:"参见 LICENSE.md"
+}
+};
+
+const LANGS = Object.keys(T);
+function apply(lang){
+  if(!T[lang]) lang = "en";
+  document.documentElement.lang = lang;
+  const d = T[lang];
+  document.querySelectorAll("[data-i]").forEach(el=>{
+    const v = d[el.getAttribute("data-i")];
+    if(v !== undefined) el.textContent = v;
+  });
+  const sel = document.getElementById("lang");
+  if(sel) sel.value = lang;
+  try{ localStorage.setItem("izgon-lang", lang); }catch(e){}
+}
+function pick(){
+  try{ const s = localStorage.getItem("izgon-lang"); if(s && T[s]) return s; }catch(e){}
+  for(const c of (navigator.languages || [navigator.language || "en"])){
+    const two = String(c).slice(0,2).toLowerCase();
+    if(T[two]) return two;
+    if(two === "hr" || two === "sr") return "bs";
+  }
+  return "en";
+}
+document.getElementById("lang").addEventListener("change", e => apply(e.target.value));
+
+const themeBtn = document.getElementById("theme");
+function setTheme(t){
+  document.documentElement.setAttribute("data-theme", t);
+  try{ localStorage.setItem("izgon-theme", t); }catch(e){}
+}
+themeBtn.addEventListener("click", ()=>{
+  setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
+});
+(function(){
+  let t = null;
+  try{ t = localStorage.getItem("izgon-theme"); }catch(e){}
+  if(!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  setTheme(t);
+  apply(pick());
+})();
+</script>
+</body>
+</html>
