@@ -175,6 +175,12 @@ $IcoSrc = Join-Path $Src "izgon.ico"
 $Ico    = Join-Path $Dir "izgon.ico"
 if (Test-Path $IcoSrc) { Copy-Item $IcoSrc $Ico -Force }
 
+# Same for the one-click proof script, so it survives the download folder too.
+foreach ($f in @("IzgoN-Test.cmd", "IzgoN-Test.ps1")) {
+    $from = Join-Path $Src $f
+    if (Test-Path $from) { Copy-Item $from (Join-Path $Dir $f) -Force }
+}
+
 # A launcher, so clicking the icon starts IzgoN if it is stopped and then
 # opens the dashboard. Clicking it when IzgoN is already running just opens it.
 $Launcher = @'
@@ -266,15 +272,24 @@ if ($up) {
   Chrome or Edge, then use the install icon in the address bar (or the menu ->
   Install). It becomes a windowed app with the same icon.
 
-  Send your first report - paste this into PowerShell:
+  The dashboard is empty until something reports to it. To see it save
+  something, double-click this, in $Dir :
+
+      IzgoN-Test.cmd
+
+  It sends three reports from a pretend device - one new, one identical,
+  one with a single field changed - and prints what each cost on the wire
+  against what it would have cost without IzgoN. Ten seconds, and the
+  dashboard counters move while you watch.
+
+  By hand instead, in PowerShell:
 
       `$h = @{ 'X-API-Key' = '$Key' }
       Invoke-RestMethod -Uri http://localhost:8000/api/nodes/sensor-01/sync ``
         -Method Post -ContentType 'application/json' -Headers `$h ``
         -Body '{"state": {"temp": 21.5, "hum": 60}}'
 
-  Send it twice. The second time comes back NO_CHANGE, 0 bytes - and the
-  dashboard counter moves while you watch.
+  Send it twice. The second time comes back NO_CHANGE, 0 bytes.
 
   Stop it:  the IzgoN-Stop shortcut, or "docker compose down" in the folder.
 "@

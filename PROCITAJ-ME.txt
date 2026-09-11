@@ -5,6 +5,9 @@ IzgoN — instalacija na Windows
 2. Dvoklikni  IzgoN-Setup.cmd
 3. Sačekaj. Kad završi, na Desktopu će ti stajati ikona "IzgoN".
 4. Klikni tu ikonu kad god hoćeš otvoriti dashboard.
+5. Hoćeš vidjeti da stvarno štedi? Dvoklikni  IzgoN-Test.cmd
+   Pošalje tri izvještaja i ispiše koliko je bajtova otišlo, a koliko
+   bi otišlo bez IzgoN-a. Traje deset sekundi.
 
 Treba ti Docker Desktop. Ako ga nemaš, setup će ti reći i dati komandu.
 
@@ -20,6 +23,9 @@ IzgoN — Windows setup (English)
 2. Double-click  IzgoN-Setup.cmd
 3. When it finishes there is an "IzgoN" icon on your Desktop.
 4. Click that icon whenever you want the dashboard.
+5. Want to see it actually save something? Double-click  IzgoN-Test.cmd
+   It sends three reports and prints what each one cost on the wire
+   against what it would have cost without IzgoN. Ten seconds.
 
 Requires Docker Desktop. If it is missing, the setup says so and gives you
 the one command that installs it.
