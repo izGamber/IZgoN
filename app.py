@@ -355,49 +355,79 @@ def real_metrics() -> dict:
     }
 
 # ============================== licensing.py ==============================
+#
+# Licence keys are signed by the seller with an Ed25519 private key, and
+# verified here with the matching PUBLIC key, which is the only half that ships.
+#
+# The previous scheme signed with HMAC and asked the buyer to put both the key
+# and the signing secret into their own .env. Anything the buyer holds, the
+# buyer can also generate: a matching pair took ten seconds to make with a
+# script that sat in the public repository. The gate stopped nobody.
+#
+# Ed25519 fixes the half that can be fixed. Nobody can forge a key without the
+# private half, and the private half never leaves the seller. What it does not
+# do - and no scheme that ships its own source can - is stop someone from
+# deleting these lines. That is a licence violation with a legal remedy, not a
+# hole left open by the design.
 
-LICENSE_SECRET = os.environ.get("DATAPULSE_LICENSE_SECRET", "")
+SELLER_PUBLIC_KEY = os.environ.get(
+    "DATAPULSE_LICENSE_PUBKEY",
+    # Ed25519 public key, base64url. Public by design - it only verifies.
+    "__SELLER_PUBLIC_KEY__",
+)
 FREE_TIER_SYNC_LIMIT = int(os.environ.get("DATAPULSE_FREE_TIER_LIMIT", "10000"))
 
-
-def _sign(payload_b64: str, secret: str) -> str:
-    return hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()[:24]
+KEY_PREFIX = "IZG2-"
 
 
-def generate_license(customer_email: str, product: str = "izgon-selfhosted", secret: Optional[str] = None) -> str:
-    """Sold to a paying customer. Requires DATAPULSE_LICENSE_SECRET to be set
-    (the seller's private signing secret - never ship this to customers)."""
-    secret = secret or LICENSE_SECRET
-    if not secret:
-        raise RuntimeError(
-            "DATAPULSE_LICENSE_SECRET is not set. This is the seller's private "
-            "signing key - generate one (e.g. `openssl rand -hex 32`) and keep "
-            "it secret. Never include it in anything shipped to customers."
-        )
-    payload = {"email": customer_email, "product": product, "issued": int(time.time())}
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode()).decode()
-    signature = _sign(payload_b64, secret)
-    return f"DPC-{payload_b64}.{signature}"
-
-
-def validate_license(key: Optional[str], secret: Optional[str] = None) -> Optional[dict]:
-    """Returns the decoded payload if valid, None if missing/invalid/tampered.
-    Never raises - a bad key should degrade to 'unlicensed', not crash the app."""
-    secret = secret or LICENSE_SECRET
-    if not key or not secret:
-        return None
+def _load_public_key(b64: str):
+    """None rather than an exception: a mangled key must degrade to
+    'unlicensed', never take the server down at import time."""
     try:
-        if not key.startswith("DPC-") or "." not in key:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        raw = base64.urlsafe_b64decode(b64.encode())
+        if len(raw) != 32:
             return None
-        body = key[len("DPC-"):]
-        payload_b64, signature = body.rsplit(".", 1)
-        expected = _sign(payload_b64, secret)
-        if not hmac.compare_digest(signature, expected):
-            return None
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
-        return payload
+        return Ed25519PublicKey.from_public_bytes(raw)
     except Exception:
         return None
+
+
+def validate_license(key: Optional[str], public_key_b64: Optional[str] = None) -> Optional[dict]:
+    """Returns the decoded payload if the key carries a valid seller signature,
+    None otherwise. Never raises."""
+    if not key:
+        return None
+
+    if key.startswith("DPC-"):
+        # A key from the old HMAC scheme. Refused rather than honoured: that
+        # format was forgeable by whoever held it.
+        print(
+            "[izgon] This licence key is in the retired DPC- format and is no "
+            "longer accepted. Write to the seller for a replacement - it is free "
+            "and takes a minute.",
+            flush=True,
+        )
+        return None
+
+    pub = _load_public_key(public_key_b64 or SELLER_PUBLIC_KEY)
+    if pub is None:
+        return None
+
+    try:
+        from cryptography.exceptions import InvalidSignature
+        if not key.startswith(KEY_PREFIX) or "." not in key:
+            return None
+        payload_b64, sig_b64 = key[len(KEY_PREFIX):].rsplit(".", 1)
+        signature = base64.urlsafe_b64decode(sig_b64.encode())
+        try:
+            pub.verify(signature, payload_b64.encode())
+        except InvalidSignature:
+            return None
+        return json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+    except Exception:
+        return None
+
 
 # ============================== inline static assets ==============================
 INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <link rel="manifest" href="/manifest.json">\n    <link rel="icon" href="/icon-192.png">\n    <link rel="apple-touch-icon" href="/icon-192.png">\n    <meta name="theme-color" content="#05060b">\n    <link rel="preconnect" href="https://fonts.googleapis.com">\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">\n    <style>\n        :root {\n            --bg: #05060b;\n            --card-bg: rgba(18, 22, 38, 0.55);\n            --card-border: rgba(120, 170, 255, 0.18);\n            --cyan: #37e6ff;\n            --violet: #a78bfa;\n            --magenta: #ff5fd8;\n            --green: #34ffb0;\n            --amber: #ffb454;\n            --text-main: #eef4ff;\n            --text-muted: #8fa0c4;\n        }\n        * { box-sizing: border-box; margin: 0; padding: 0; }\n        html, body { height: 100%; }\n        body {\n            background: var(--bg);\n            color: var(--text-main);\n            font-family: \'Space Mono\', ui-monospace, monospace;\n            overflow-x: hidden;\n            position: relative;\n            min-height: 100vh;\n            padding: 28px 20px 60px;\n        }\n\n        /* ---- animated holographic orb backdrop, same spirit as the\n           pulsing gradient orb shown during voice mode ---- */\n        .orb-field {\n            position: fixed;\n            inset: 0;\n            z-index: -2;\n            overflow: hidden;\n            pointer-events: none;\n        }\n        .orb {\n            position: absolute;\n            width: 60vmax;\n            height: 60vmax;\n            border-radius: 50%;\n            filter: blur(80px);\n            opacity: 0.45;\n            mix-blend-mode: screen;\n            animation: drift 22s ease-in-out infinite alternate;\n        }\n        .orb.a { background: radial-gradient(circle, var(--cyan), transparent 65%); top: -20%; left: -15%; animation-duration: 26s; }\n        .orb.b { background: radial-gradient(circle, var(--violet), transparent 65%); bottom: -25%; right: -10%; animation-duration: 30s; animation-delay: -6s; }\n        .orb.c { background: radial-gradient(circle, var(--magenta), transparent 65%); top: 30%; right: 20%; animation-duration: 20s; animation-delay: -12s; opacity: 0.3; }\n        @keyframes drift {\n            0%   { transform: translate(0, 0) scale(1) rotate(0deg); }\n            50%  { transform: translate(6%, -4%) scale(1.12) rotate(8deg); }\n            100% { transform: translate(-5%, 5%) scale(0.95) rotate(-6deg); }\n        }\n        .grid-overlay {\n            position: fixed;\n            inset: 0;\n            z-index: -1;\n            background-image:\n                linear-gradient(rgba(120,170,255,0.05) 1px, transparent 1px),\n                linear-gradient(90deg, rgba(120,170,255,0.05) 1px, transparent 1px);\n            background-size: 42px 42px;\n            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);\n            pointer-events: none;\n        }\n\n        header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }\n        .logo-area h1 {\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 900;\n            font-size: 30px;\n            letter-spacing: 2px;\n            background: linear-gradient(100deg, var(--cyan), var(--violet) 45%, var(--magenta) 90%);\n            -webkit-background-clip: text;\n            background-clip: text;\n            color: transparent;\n            background-size: 200% auto;\n            animation: shimmer 6s linear infinite;\n            text-shadow: 0 0 40px rgba(55, 230, 255, 0.25);\n        }\n        @keyframes shimmer { to { background-position: 200% center; } }\n        .logo-area p { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; max-width: 420px; line-height: 1.5; }\n\n        .system-status {\n            display: flex; align-items: center; gap: 10px;\n            padding: 9px 18px; border-radius: 30px; font-size: 11px; font-weight: 700;\n            letter-spacing: 1px;\n            backdrop-filter: blur(10px);\n            border: 1px solid var(--card-border);\n        }\n        .system-status.live { background: rgba(52, 255, 176, 0.08); border-color: var(--green); color: var(--green); box-shadow: 0 0 24px rgba(52,255,176,0.25); }\n        .system-status.no-data { background: rgba(143, 160, 196, 0.08); border-color: var(--text-muted); color: var(--text-muted); }\n        .system-status.down { background: rgba(255, 95, 95, 0.08); border-color: #ff5f5f; color: #ff5f5f; }\n        .pulse-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; animation: pulse 1.6s ease-in-out infinite; }\n        @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }\n\n        .buy-btn {\n            display: inline-flex; align-items: center; gap: 8px;\n            padding: 12px 26px;\n            border-radius: 14px;\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 700;\n            font-size: 13px;\n            letter-spacing: 1px;\n            text-decoration: none;\n            color: #05060b;\n            background: linear-gradient(100deg, var(--cyan), var(--violet), var(--magenta));\n            background-size: 200% auto;\n            box-shadow: 0 0 30px rgba(167, 139, 250, 0.45);\n            transition: transform 0.2s ease, box-shadow 0.2s ease;\n            animation: shimmer 5s linear infinite;\n        }\n        .buy-btn:active { transform: scale(0.97); }\n        .buy-note { font-size: 10.5px; color: var(--text-muted); margin-top: 8px; max-width: 280px; }\n\n        .note-box {\n            background: rgba(255, 180, 84, 0.06);\n            border: 1px solid var(--amber);\n            color: var(--amber);\n            padding: 14px 18px;\n            border-radius: 12px;\n            font-size: 12.5px;\n            margin-bottom: 25px;\n            backdrop-filter: blur(10px);\n        }\n\n        .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; margin-bottom: 26px; }\n        .metric-card {\n            position: relative;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 16px;\n            padding: 22px;\n            backdrop-filter: blur(16px);\n            overflow: hidden;\n        }\n        .metric-card::before {\n            content: \'\';\n            position: absolute; inset: -1px;\n            border-radius: 16px;\n            padding: 1px;\n            background: conic-gradient(from var(--angle, 0deg), var(--cyan), var(--violet), var(--magenta), var(--cyan));\n            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);\n            -webkit-mask-composite: xor;\n            mask-composite: exclude;\n            opacity: 0.55;\n            animation: spin 6s linear infinite;\n        }\n        @keyframes spin { to { --angle: 360deg; } }\n        @property --angle { syntax: \'<angle>\'; initial-value: 0deg; inherits: false; }\n        .metric-title { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }\n        .metric-value { font-family: \'Orbitron\', sans-serif; font-size: 30px; font-weight: 700; margin-top: 10px; color: #fff; text-shadow: 0 0 20px rgba(55,230,255,0.2); }\n        .metric-sub { font-size: 10.5px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }\n\n        table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(16px); }\n        th, td { text-align: left; padding: 13px 16px; font-size: 12px; border-bottom: 1px solid var(--card-border); }\n        th { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }\n        td { color: var(--text-main); }\n        .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 28px 0 12px; }\n\n        details.about {\n            margin-top: 30px;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 14px;\n            padding: 16px 20px;\n            backdrop-filter: blur(16px);\n            font-size: 12.5px;\n            line-height: 1.6;\n            color: var(--text-muted);\n        }\n        details.about summary { cursor: pointer; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; }\n        details.about ul { margin: 10px 0 0 18px; }\n\n        footer { margin-top: 30px; font-size: 10.5px; color: var(--text-muted); text-align: center; opacity: 0.7; }\n    </style>\n</head>\n<body>\n    <div class="orb-field">\n        <div class="orb a"></div>\n        <div class="orb b"></div>\n        <div class="orb c"></div>\n    </div>\n    <div class="grid-overlay"></div>\n\n    <header>\n        <div class="logo-area">\n            <h1>IzgoN</h1>\n            <p>Delta-sync engine &mdash; source-available, self-hosted. Every figure below is read live from /api/metrics.</p>\n        </div>\n        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">\n            <div id="statusPill" class="system-status no-data">\n                <div class="pulse-dot"></div>\n                <span id="statusText">CHECKING&hellip;</span>\n            </div>\n            <a class="buy-btn" href="__PURCHASE_URL__" target="_blank" rel="noopener noreferrer">Buy a licence &mdash; $29</a>\n        </div>\n    </header>\n\n    <div id="storageNote" class="note-box" style="display:none;">Running without Redis &mdash; node state is being kept in memory and is lost when this process stops. Fine for a first look; start Redis beside it (docker-compose.yml in the repo) for a setup that survives restarts.</div>\n    <div id="noDataNote" class="note-box" style="display:none;">\n        This instance has had no traffic yet, so the counters below read zero. Measured results at three change rates are published in BENCHMARK.md &mdash; 94.3% saved at a 5% change rate, and 35.3% at 70%, where most of the reason to run this disappears. These numbers are real, not placeholders &mdash; they will populate once traffic\n        goes through <code>POST /api/nodes/{id}/sync</code>. Run <code>python benchmark.py</code> to generate a real sample.\n    </div>\n\n    <div class="grid-metrics">\n        <div class="metric-card">\n            <div class="metric-title">Bandwidth Saved</div>\n            <div class="metric-value" id="mSaved">&mdash;</div>\n            <div class="metric-sub">vs. sending full state every time</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Sync Events Logged</div>\n            <div class="metric-value" id="mEvents">&mdash;</div>\n            <div class="metric-sub" id="mNoChange">&mdash;</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Active Nodes</div>\n            <div class="metric-value" id="mNodes">&mdash;</div>\n            <div class="metric-sub">distinct node_id values seen</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Bytes: Naive vs. Actual</div>\n            <div class="metric-value" id="mBytes">&mdash;</div>\n            <div class="metric-sub">total bytes, measured</div>\n        </div>\n    </div>\n\n    <div class="section-title">Known Nodes (requires API key &mdash; open with ?key= to load)</div>\n    <table>\n        <thead><tr><th>Node ID</th><th>Last known state</th></tr></thead>\n        <tbody id="nodesBody"><tr><td colspan="2" style="color:var(--text-muted)">Set API key via ?key= query param to load.</td></tr></tbody>\n    </table>\n\n    <details class="about">\n        <summary>O projektu / What is IzgoN?</summary>\n        <p style="margin-top:8px;">IzgoN sends only what changed instead of the full state every sync &mdash; a hash-based delta-sync engine you self-host, built for fleets that report state often over metered links &mdash; IoT and sensor devices on cellular SIMs, edge agents on constrained connections, monitoring agents polling every few seconds &mdash; where most fields stay identical between reports.</p>\n        <ul>\n            <li>Real FastAPI backend, Redis-backed state, SQLite event log &mdash; nothing here is simulated.</li>\n            <li>Offline license verification &mdash; no phone-home server required after purchase.</li>\n            <li>Source-available licence &mdash; read, run and modify it yourself. Free up to 10,000 syncs; a one-time licence beyond that. Not open source: see LICENSE.md.</li>\n        </ul>\n    </details>\n\n    <footer>IzgoN &mdash; source-available delta-sync utility. See LICENSE.md.</footer>\n\n    <script>\n        const params = new URLSearchParams(window.location.search);\n        const apiKey = params.get(\'key\') || \'\';\n        // Keep the key out of the address bar. A key left in the URL ends up in\n        // browser history, in any proxy log on the way, and in the Referer header\n        // of every outbound request from this page. Read it once, then scrub it.\n        if (apiKey) {\n            try { history.replaceState(null, \'\', window.location.pathname); } catch (e) {}\n        }\n\n        async function refreshMetrics() {\n            try {\n                const res = await fetch(\'/api/metrics\');\n                const m = await res.json();\n                const pill = document.getElementById(\'statusPill\');\n                const text = document.getElementById(\'statusText\');\n                const note = document.getElementById(\'noDataNote\');\n                const sNote = document.getElementById(\'storageNote\');\n                if (sNote) sNote.style.display = (m.storage && m.storage !== \'redis\') ? \'block\' : \'none\';\n\n                if (m.total_sync_events === 0) {\n                    pill.className = \'system-status no-data\';\n                    text.textContent = \'NO DATA YET\';\n                    note.style.display = \'block\';\n                    document.getElementById(\'mSaved\').textContent = \'—\';\n                    document.getElementById(\'mEvents\').textContent = \'0\';\n                    document.getElementById(\'mNoChange\').textContent = \'no NO_CHANGE events yet\';\n                    document.getElementById(\'mNodes\').textContent = \'0\';\n                    document.getElementById(\'mBytes\').textContent = \'—\';\n                    return;\n                }\n\n                pill.className = \'system-status live\';\n                text.textContent = \'LIVE — REAL DATA\';\n                note.style.display = \'none\';\n                document.getElementById(\'mSaved\').textContent = m.bandwidth_saved_pct + \'%\';\n                document.getElementById(\'mEvents\').textContent = m.total_sync_events;\n                document.getElementById(\'mNoChange\').textContent = m.no_change_events + \' were NO_CHANGE (0 bytes)\';\n                document.getElementById(\'mNodes\').textContent = m.active_nodes;\n                document.getElementById(\'mBytes\').textContent =\n                    m.bytes_actually_sent + \' / \' + m.bytes_full_if_naive + \' B\';\n            } catch (e) {\n                const pill = document.getElementById(\'statusPill\');\n                pill.className = \'system-status down\';\n                document.getElementById(\'statusText\').textContent = \'API UNREACHABLE\';\n            }\n        }\n\n        async function refreshNodes() {\n            if (!apiKey) return;\n            try {\n                const res = await fetch(\'/api/nodes\', { headers: { \'X-API-Key\': apiKey } });\n                if (!res.ok) throw new Error(\'unauthorized\');\n                const data = await res.json();\n                const body = document.getElementById(\'nodesBody\');\n                body.innerHTML = \'\';\n                if (data.nodes.length === 0) {\n                    body.innerHTML = \'<tr><td colspan="2" style="color:var(--text-muted)">No nodes yet.</td></tr>\';\n                }\n                for (const n of data.nodes) {\n                    const tr = document.createElement(\'tr\');\n                    tr.innerHTML = `<td>${n.node_id}</td><td><code>${JSON.stringify(n.state)}</code></td>`;\n                    body.appendChild(tr);\n                }\n            } catch (e) {\n                document.getElementById(\'nodesBody\').innerHTML =\n                    \'<tr><td colspan="2" style="color:var(--text-muted)">Invalid/missing API key.</td></tr>\';\n            }\n        }\n\n        refreshMetrics();\n        refreshNodes();\n        setInterval(refreshMetrics, 3000);\n        setInterval(refreshNodes, 5000);\n\n        if (\'serviceWorker\' in navigator) {\n            window.addEventListener(\'load\', () => {\n                navigator.serviceWorker.register(\'/sw.js\').catch(() => {});\n            });\n        }\n    </script>\n</body>\n</html>\n'
@@ -425,7 +455,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="IzgoN", version="1.1.2", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

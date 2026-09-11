@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.2.0 — 2026-09-11
+
+The licence check did not check anything. This release makes it real, and it is
+a breaking change to the key format.
+
+### Fixed
+
+- **Anyone could issue themselves a licence.** Keys were signed with HMAC, and
+  the buyer's server needed the same secret that signed them — so the buyer held
+  both halves and could mint a matching pair in ten seconds, with a script that
+  was sitting in this repository. The gate stopped nobody who read the code.
+
+  Keys are now signed with **Ed25519**. The private half never leaves the seller;
+  IzgoN ships only the public half, which can verify a signature and cannot
+  produce one. Verification stays entirely offline — no phone-home, same as
+  before.
+
+  What this does not do, and no scheme that publishes its own source can, is
+  stop someone from deleting the check. That is a licence violation with a legal
+  remedy, not a hole left open in the design. Said plainly here so nobody buys
+  on a wrong idea of what the key is for.
+
+### Changed
+
+- **Buyers now set one variable, not two.** `DATAPULSE_LICENSE_KEY` and nothing
+  else; `DATAPULSE_LICENSE_SECRET` is gone, along with the confusion of asking a
+  customer to store a "secret" that was never secret.
+- Keys in the old `DPC-` format are refused, with a message telling the holder
+  to ask for a replacement. Nobody has bought one yet, so nobody is affected.
+- `cryptography` is now a dependency.
+- The licence text gained an ownership clause, a requirement to keep the
+  copyright notice intact, and a governing-law clause.
+
 ## 1.1.2 — 2026-09-11
 
 Found by running the one command this project tells people to run, on a machine
