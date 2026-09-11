@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.2 — 2026-09-11
+
+Found by running the one command this project tells people to run, on a machine
+with nothing else on it.
+
+### Fixed
+
+- **`docker run ghcr.io/izgamber/izgon:latest` could not work.** That command
+  starts this container and nothing else, so there was no Redis — and every
+  state read went straight to it. The dashboard loaded, `/healthz` admitted
+  `redis_reachable: false`, and then the first sync died with an unexplained
+  HTTP 500. The one path advertised as "no cloning, no building" was the one
+  path guaranteed to fail in front of whoever tried it first.
+
+  When Redis is unreachable the last known state is now kept in this process
+  instead. Nothing of value is lost: a restart means every node resyncs
+  `FULL_STATE` once, which is exactly what a cold Redis would have produced.
+  It is not silent — `/healthz` and `/api/metrics` report
+  `storage: "memory (Redis unreachable)"`, the dashboard shows a banner, and
+  one warning line goes to the log explaining how to get a setup that survives
+  restarts.
+
+  This is only safe because IzgoN is single-instance by design; with several
+  replicas behind one Redis, an in-memory fallback would let them disagree
+  about the same node. Set `DATAPULSE_ALLOW_MEMORY_FALLBACK=0` to refuse to
+  start down that road and let the error surface instead.
+
+### Changed
+
+- `/healthz` and `/api/metrics` both carry a `storage` field now.
+  `redis_reachable` is unchanged, for anything already reading it.
+
 ## 1.1.1 — 2026-09-11
 
 Three holes found by attacking the running server rather than reading the code.
