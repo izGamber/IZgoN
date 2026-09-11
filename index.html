@@ -150,6 +150,21 @@
   .lk b{display:block;font-size:14px;color:var(--fg)}
   .lk span{display:block;font-size:12px;color:var(--mut);margin-top:3px;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.calcwrap{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px;margin:18px 0}
+.calcwrap label{display:block;font-size:13px;font-weight:600;margin-bottom:5px}
+.calcwrap .hint{font-weight:400;opacity:.7;font-size:12px}
+.calcwrap input,.calcwrap textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit;font-size:14px}
+.calcwrap textarea{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;min-height:96px;resize:vertical}
+.calcfull{grid-column:1/-1}
+.calcout{margin-top:6px}
+.calcrow{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}
+.calcrow b{font-variant-numeric:tabular-nums}
+.calcbig{font-size:30px;font-weight:800;letter-spacing:-.5px;margin:14px 0 2px;font-variant-numeric:tabular-nums}
+.verdict{margin-top:14px;padding:14px 16px;border-radius:10px;font-size:14.5px;line-height:1.5}
+.verdict.good{background:rgba(30,160,90,.10);border:1px solid rgba(30,160,90,.45)}
+.verdict.bad{background:rgba(200,120,20,.10);border:1px solid rgba(200,120,20,.45)}
+@media(max-width:680px){.calcwrap{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -161,6 +176,7 @@
     <nav>
       <a class="navlink" href="#install" data-i="nav_install"></a>
       <a class="navlink" href="#numbers" data-i="nav_numbers"></a>
+      <a class="navlink" href="#calc" data-i="nav_calc"></a>
       <a class="navlink" href="#limits" data-i="nav_limits"></a>
       <a class="navlink" href="#faq" data-i="nav_faq"></a>
       <a class="navlink" href="#team" data-i="nav_team"></a>
@@ -327,6 +343,22 @@ docker compose up -d</code></pre>
   </div></section>
 
 
+  <section id="calc"><div class="wrap">
+    <h2 data-i="ca_h"></h2>
+    <p data-i="ca_p"></p>
+    <div class="calcwrap">
+      <div><label data-i="ca_l1"></label><input id="cDev" type="number" min="1" value="100"></div>
+      <div><label data-i="ca_l2"></label><input id="cRep" type="number" min="1" value="288"></div>
+      <div class="calcfull"><label data-i="ca_l3"></label><textarea id="cJson">{"device_id":"truck-114","lat":44.5372,"lon":18.6673,"speed":0,"ignition":false,"fuel_pct":62,"odo_km":183422,"battery_v":12.6,"signal":-71,"fw":"2.4.1"}</textarea></div>
+      <div><label data-i="ca_l4"></label><input id="cChg" type="number" min="1" max="100" value="10"></div>
+      <div><label data-i="ca_l5"></label><input id="cPrice" type="number" min="0" step="0.01" value="5"></div>
+      <div><label data-i="ca_l6"></label><input id="cCur" value="EUR"></div>
+      <div><label data-i="ca_l7"></label><input id="cLic" type="number" min="0" step="1" value="29"></div>
+    </div>
+    <div class="calcout" id="cOut"></div>
+    <p class="note" data-i="ca_note"></p>
+  </div></section>
+
   <section id="faq"><div class="wrap">
     <h2 data-i="faq_h"></h2>
     <details class="faq"><summary data-i="q1"></summary><p data-i="a1"></p></details>
@@ -392,6 +424,26 @@ docker compose up -d</code></pre>
 <script>
 const T = {
 bs:{
+ nav_calc:"Kalkulator",
+ ca_h:"Koliko biste uštedjeli — izračunajte na svojim podacima",
+ ca_p:"Zalijepite jedan stvarni izvještaj sa svog uređaja i unesite svoje brojke. Račun se radi u vašem pregledniku; ništa se ne šalje nama.",
+ ca_l1:"Broj uređaja",
+ ca_l2:"Izvještaja po uređaju dnevno (svakih 5 min = 288)",
+ ca_l3:"Jedan vaš izvještaj, kako ga uređaj stvarno šalje (JSON)",
+ ca_l4:"Koliko se polja mijenja između dva izvještaja (%)",
+ ca_l5:"Cijena po MB po vašoj tarifi",
+ ca_l6:"Valuta",
+ ca_l7:"Cijena licence u istoj valuti (29 USD)",
+ ca_r_without:"Bez IzgoN-a, mjesečno",
+ ca_r_with:"Sa IzgoN-om, mjesečno",
+ ca_r_saved:"Ušteđeno",
+ ca_r_month:"mjesečno",
+ ca_r_year:"Godišnje",
+ ca_yes:"Licenca se isplati za {d} dana. Sve poslije toga je čista ušteda.",
+ ca_no:"Po ovim brojkama vam se ne isplati. Radije nemojte kupiti — IzgoN pomaže samo kad se izvještaji šalju često i kad se malo toga mijenja između njih.",
+ ca_bad:"To nije ispravan JSON. Zalijepite jedan cijeli izvještaj, sa vitičastim zagradama.",
+ ca_note:"Procjena po istom pravilu koje server stvarno primjenjuje: kad se ništa ne promijeni ne šalje se ništa, inače putuju samo promijenjena polja, i nikad više od cijelog stanja. Za broj kojem možete vjerovati, pustite benchmark na izvozu svojih izvještaja — komanda je u BENCHMARK.md.",
+
  nav_faq:"Pitanja",
  nav_team:"Autor",
  video_h:"Za trideset sekundi, bez čitanja",
@@ -488,6 +540,26 @@ bs:{
  f_lic:"Vidi LICENSE.md"
 },
 en:{
+ nav_calc:"Calculator",
+ ca_h:"What it would save you — on your own numbers",
+ ca_p:"Paste one real report from your device and enter your figures. The maths runs in your browser; nothing is sent to us.",
+ ca_l1:"Number of devices",
+ ca_l2:"Reports per device per day (every 5 min = 288)",
+ ca_l3:"One of your reports, exactly as the device sends it (JSON)",
+ ca_l4:"How much of it changes between two reports (%)",
+ ca_l5:"Price per MB on your tariff",
+ ca_l6:"Currency",
+ ca_l7:"Licence price in the same currency (29 USD)",
+ ca_r_without:"Without IzgoN, per month",
+ ca_r_with:"With IzgoN, per month",
+ ca_r_saved:"Saved",
+ ca_r_month:"month",
+ ca_r_year:"Per year",
+ ca_yes:"The licence pays for itself in {d} days. Everything after that is saving.",
+ ca_no:"On these numbers it would not pay off. Better not to buy — IzgoN only helps when reports are frequent and little changes between them.",
+ ca_bad:"That is not valid JSON. Paste one whole report, braces included.",
+ ca_note:"Estimated by the same rule the server actually applies: nothing changed sends nothing, otherwise only the changed fields travel, and never more than the whole state. For a number you can trust, run the benchmark against an export of your own reports — the command is in BENCHMARK.md.",
+
  nav_faq:"FAQ",
  nav_team:"Author",
  video_h:"Thirty seconds, no reading",
@@ -584,6 +656,26 @@ en:{
  f_lic:"See LICENSE.md"
 },
 de:{
+ nav_calc:"Rechner",
+ ca_h:"Was es Ihnen sparen würde — mit Ihren eigenen Zahlen",
+ ca_p:"Fügen Sie eine echte Meldung Ihres Geräts ein und tragen Sie Ihre Werte ein. Gerechnet wird in Ihrem Browser; nichts wird an uns gesendet.",
+ ca_l1:"Anzahl der Geräte",
+ ca_l2:"Meldungen pro Gerät und Tag (alle 5 Min = 288)",
+ ca_l3:"Eine Ihrer Meldungen, genau wie das Gerät sie sendet (JSON)",
+ ca_l4:"Wie viel sich zwischen zwei Meldungen ändert (%)",
+ ca_l5:"Preis pro MB in Ihrem Tarif",
+ ca_l6:"Währung",
+ ca_l7:"Lizenzpreis in derselben Währung (29 USD)",
+ ca_r_without:"Ohne IzgoN, pro Monat",
+ ca_r_with:"Mit IzgoN, pro Monat",
+ ca_r_saved:"Gespart",
+ ca_r_month:"Monat",
+ ca_r_year:"Pro Jahr",
+ ca_yes:"Die Lizenz hat sich nach {d} Tagen bezahlt gemacht. Alles danach ist Ersparnis.",
+ ca_no:"Mit diesen Zahlen lohnt es sich nicht. Kaufen Sie lieber nicht — IzgoN hilft nur bei häufigen Meldungen, zwischen denen sich wenig ändert.",
+ ca_bad:"Das ist kein gültiges JSON. Fügen Sie eine vollständige Meldung ein, mit geschweiften Klammern.",
+ ca_note:"Geschätzt nach derselben Regel, die der Server tatsächlich anwendet: ohne Änderung wird nichts gesendet, sonst reisen nur die geänderten Felder, und nie mehr als der ganze Zustand. Für eine belastbare Zahl lassen Sie den Benchmark über einen Export Ihrer eigenen Meldungen laufen — der Befehl steht in BENCHMARK.md.",
+
  nav_faq:"FAQ",
  nav_team:"Autor",
  video_h:"Dreißig Sekunden, ohne zu lesen",
@@ -680,6 +772,26 @@ de:{
  f_lic:"Siehe LICENSE.md"
 },
 fr:{
+ nav_calc:"Calculateur",
+ ca_h:"Ce que cela vous ferait économiser — sur vos propres chiffres",
+ ca_p:"Collez un vrai rapport de votre appareil et saisissez vos chiffres. Le calcul se fait dans votre navigateur ; rien ne nous est envoyé.",
+ ca_l1:"Nombre d'appareils",
+ ca_l2:"Rapports par appareil et par jour (toutes les 5 min = 288)",
+ ca_l3:"Un de vos rapports, tel que l'appareil l'envoie (JSON)",
+ ca_l4:"Part qui change entre deux rapports (%)",
+ ca_l5:"Prix par Mo selon votre forfait",
+ ca_l6:"Devise",
+ ca_l7:"Prix de la licence dans la même devise (29 USD)",
+ ca_r_without:"Sans IzgoN, par mois",
+ ca_r_with:"Avec IzgoN, par mois",
+ ca_r_saved:"Économisé",
+ ca_r_month:"mois",
+ ca_r_year:"Par an",
+ ca_yes:"La licence est remboursée en {d} jours. Tout ce qui suit est une économie.",
+ ca_no:"Avec ces chiffres, ce n'est pas rentable. Mieux vaut ne pas acheter — IzgoN n'aide que si les rapports sont fréquents et changent peu.",
+ ca_bad:"Ce JSON est invalide. Collez un rapport entier, accolades comprises.",
+ ca_note:"Estimé selon la règle que le serveur applique réellement : rien ne change, rien n'est envoyé ; sinon seuls les champs modifiés voyagent, et jamais plus que l'état entier. Pour un chiffre fiable, lancez le benchmark sur un export de vos propres rapports — la commande est dans BENCHMARK.md.",
+
  nav_faq:"FAQ",
  nav_team:"Auteur",
  video_h:"Trente secondes, sans lire",
@@ -776,6 +888,26 @@ fr:{
  f_lic:"Voir LICENSE.md"
 },
 ja:{
+ nav_calc:"計算ツール",
+ ca_h:"あなたの数字で、いくら節約できるか",
+ ca_p:"実際の端末レポートを 1 件貼り付け、数値を入力してください。計算はブラウザ内で行われ、当方には何も送信されません。",
+ ca_l1:"端末数",
+ ca_l2:"1 端末あたりの 1 日のレポート数（5 分ごと = 288）",
+ ca_l3:"端末が実際に送信している形式のレポート 1 件（JSON）",
+ ca_l4:"レポート間で変化する割合（%）",
+ ca_l5:"ご契約の 1 MB あたりの料金",
+ ca_l6:"通貨",
+ ca_l7:"同じ通貨でのライセンス価格（29 米ドル）",
+ ca_r_without:"IzgoN なし、月あたり",
+ ca_r_with:"IzgoN あり、月あたり",
+ ca_r_saved:"節約分",
+ ca_r_month:"月",
+ ca_r_year:"年あたり",
+ ca_yes:"ライセンスは {d} 日で元が取れます。それ以降はすべて節約です。",
+ ca_no:"この数値では採算が取れません。購入はお勧めしません。IzgoN が効くのは、レポートが頻繁で、かつ内容がほとんど変わらない場合だけです。",
+ ca_bad:"JSON が正しくありません。波かっこを含めてレポート全体を貼り付けてください。",
+ ca_note:"サーバーが実際に適用するのと同じ規則による概算です。変化がなければ何も送らず、変化があれば変わった項目だけが送られ、状態全体を超えることはありません。信頼できる数値は、ご自身のレポートのエクスポートに対してベンチマークを実行してください。コマンドは BENCHMARK.md にあります。",
+
  nav_faq:"よくある質問",
  nav_team:"作者",
  video_h:"30 秒で、読まずに",
@@ -872,6 +1004,26 @@ ja:{
  f_lic:"LICENSE.md を参照"
 },
 zh:{
+ nav_calc:"计算器",
+ ca_h:"用您自己的数字，算算能省多少",
+ ca_p:"粘贴一条设备的真实上报数据并填入您的数值。计算在您的浏览器中完成，不会发送给我们。",
+ ca_l1:"设备数量",
+ ca_l2:"每台设备每天上报次数（每 5 分钟 = 288）",
+ ca_l3:"您的一条上报数据，与设备实际发送的一致（JSON）",
+ ca_l4:"两次上报之间变化的比例（%）",
+ ca_l5:"您套餐的每 MB 价格",
+ ca_l6:"货币",
+ ca_l7:"同币种的许可证价格（29 美元）",
+ ca_r_without:"不用 IzgoN，每月",
+ ca_r_with:"使用 IzgoN，每月",
+ ca_r_saved:"节省",
+ ca_r_month:"月",
+ ca_r_year:"每年",
+ ca_yes:"许可证在 {d} 天内回本，之后全是净节省。",
+ ca_no:"按这些数字并不划算，建议不要购买。IzgoN 只在上报频繁且内容变化很小时才有价值。",
+ ca_bad:"这不是有效的 JSON。请粘贴完整的一条上报数据，包括花括号。",
+ ca_note:"按服务器实际采用的规则估算：没有变化就不发送；有变化时只发送变化的字段，且绝不超过完整状态。若需可信的数字，请用您自己上报数据的导出文件运行基准测试，命令见 BENCHMARK.md。",
+
  nav_faq:"常见问题",
  nav_team:"作者",
  video_h:"三十秒，不用读字",
@@ -981,6 +1133,7 @@ function apply(lang){
   const sel = document.getElementById("lang");
   if(sel) sel.value = lang;
   try{ localStorage.setItem("izgon-lang", lang); }catch(e){}
+  try{ calc(); }catch(e){}
 }
 function pick(){
   try{ const s = localStorage.getItem("izgon-lang"); if(s && T[s]) return s; }catch(e){}
@@ -1008,6 +1161,76 @@ themeBtn.addEventListener("click", ()=>{
   setTheme(t);
   apply(pick());
 })();
+
+/* ---- kalkulator ---- */
+function flat(o, pre, out){
+  out = out || {}; pre = pre || '';
+  for (const k in o){
+    const v = o[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) flat(v, pre+k+'.', out);
+    else out[pre+k] = v;
+  }
+  return out;
+}
+function fmt(n, d){ return new Intl.NumberFormat(document.documentElement.lang||'en',
+  {minimumFractionDigits:d||0, maximumFractionDigits:d||0}).format(n); }
+
+function calc(){
+  const out = document.getElementById('cOut');
+  if (!out) return;
+  const t = (T[document.documentElement.lang] || T.en);
+  let obj;
+  try { obj = JSON.parse(document.getElementById('cJson').value); }
+  catch(e){ out.innerHTML = '<div class="verdict bad">'+t.ca_bad+'</div>'; return; }
+
+  const dev   = Math.max(1, +document.getElementById('cDev').value||1);
+  const rep   = Math.max(1, +document.getElementById('cRep').value||1);
+  const c     = Math.min(1, Math.max(0.001, (+document.getElementById('cChg').value||10)/100));
+  const price = Math.max(0, +document.getElementById('cPrice').value||0);
+  const cur   = document.getElementById('cCur').value.trim() || 'EUR';
+  const lic   = Math.max(0, +document.getElementById('cLic').value||0);
+
+  const fields = Object.keys(flat(obj)).length || 1;
+  const full   = new TextEncoder().encode(JSON.stringify(obj)).length;
+
+  // Same shape as the engine: nothing changed -> 0 bytes; otherwise only the
+  // changed fields travel; never more than the whole state (FULL_STATE).
+  const pNone   = Math.pow(1-c, fields);
+  const changed = (c*fields) / Math.max(1e-9, (1-pNone));
+  let delta     = 2 + (changed/fields) * Math.max(0, full-2);
+  if (delta > full) delta = full;
+  const sent    = (1-pNone) * delta;
+
+  const syncs   = dev * rep * 30;
+  const mbNo    = (syncs * full) / 1048576;
+  const mbYes   = (syncs * sent) / 1048576;
+  const mbSaved = mbNo - mbYes;
+  const pct     = mbNo > 0 ? (mbSaved/mbNo)*100 : 0;
+  const perMo   = mbSaved * price;
+  const perYr   = perMo * 12;
+  const days    = perMo > 0 ? (lic / (perMo/30)) : Infinity;
+
+  let html = '';
+  html += '<div class="calcrow"><span>'+t.ca_r_without+'</span><b>'+fmt(mbNo,1)+' MB</b></div>';
+  html += '<div class="calcrow"><span>'+t.ca_r_with+'</span><b>'+fmt(mbYes,1)+' MB</b></div>';
+  html += '<div class="calcrow"><span>'+t.ca_r_saved+'</span><b>'+fmt(mbSaved,1)+' MB &middot; '+fmt(pct,1)+'%</b></div>';
+  html += '<div class="calcbig">'+fmt(perMo,2)+' '+cur+' / '+t.ca_r_month+'</div>';
+  html += '<div class="calcrow"><span>'+t.ca_r_year+'</span><b>'+fmt(perYr,2)+' '+cur+'</b></div>';
+
+  if (isFinite(days) && days <= 365 && perMo > 0){
+    const d = Math.max(1, Math.round(days));
+    html += '<div class="verdict good">'+t.ca_yes.replace('{d}', fmt(d,0)).replace('{c}', cur)+'</div>';
+  } else {
+    html += '<div class="verdict bad">'+t.ca_no+'</div>';
+  }
+  out.innerHTML = html;
+}
+['cDev','cRep','cJson','cChg','cPrice','cCur','cLic'].forEach(function(id){
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', calc);
+});
+
+try{calc();}catch(e){}
 </script>
 </body>
 </html>

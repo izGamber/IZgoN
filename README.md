@@ -241,8 +241,9 @@ All settings are environment variables. Copy `.env.example` to `.env` and edit.
 | `DATAPULSE_DB_PATH` | `datapulse_events.db` | SQLite file for the event log. |
 | `DATAPULSE_API_KEY` | `dev-local-key` | Key for authenticated endpoints. **Change this.** |
 | `DATAPULSE_FREE_TIER_LIMIT` | `10000` | Free syncs before `402`. Enough to run the benchmark and evaluate. |
-| `DATAPULSE_LICENSE_KEY` | — | Paid licence key. |
-| `DATAPULSE_LICENSE_SECRET` | — | HMAC secret used to validate the key offline. |
+| `DATAPULSE_LICENSE_KEY` | — | Paid licence key. The only licence value you set. |
+| `DATAPULSE_LICENSE_PUBKEY` | built in | Seller's Ed25519 public key. Only override it if you were told to. |
+| `DATAPULSE_ALLOW_MEMORY_FALLBACK` | `1` | Keep node state in memory when Redis is unreachable. `0` fails instead. |
 | `DATAPULSE_ALLOWED_ORIGINS` | `*` | CORS origins. **Narrow this in production.** |
 | `DATAPULSE_MAX_STATE_DEPTH` | `32` | Reject `state` nested deeper than this with `422`. |
 | `DATAPULSE_MAX_STATE_BYTES` | `1048576` | Reject a `state` larger than this with `413`. |
@@ -254,7 +255,7 @@ All settings are environment variables. Copy `.env.example` to `.env` and edit.
 IzgoN is **source-available, not open source.** You can read, run, and modify it for yourself.
 
 - **Free tier** — 10,000 syncs, no key needed. Enough to run the benchmark on your own payloads and decide.
-- **Commercial licence** — one-time payment, no subscription, no phone-home. The key is validated offline with HMAC-SHA256, so your instance never talks to a licence server.
+- **Commercial licence** — one-time payment, no subscription, no phone-home. The key carries an Ed25519 signature which your instance verifies locally against a public key shipped inside IzgoN, so it never talks to a licence server.
 
 **Start on the free tier.** 10,000 syncs is enough to run the benchmark against your
 own payloads and decide whether this is worth anything to you. No account, no card,
@@ -263,16 +264,20 @@ no sign-up — `git clone` and `docker compose up -d`.
 Checkout is being set up. Until it is live, open an issue titled `licence` and I will
 send you one; the price does not change.
 
-A licence is two values — a key and a signing secret — and both go in your `.env`:
+A licence is one value. Put it in your `.env`:
 
 ```
-DATAPULSE_LICENSE_KEY=DPC-....................=.........
-DATAPULSE_LICENSE_SECRET=<64 hex characters>
+DATAPULSE_LICENSE_KEY=IZG2-....................=..........
 ```
 
-Restart, then check `GET /api/license` shows `"licensed": true`. The key on its own
-does nothing: validation is local HMAC-SHA256, so your server needs the secret to
-verify it and never contacts a licence server.
+Restart, then check `GET /api/license` shows `"licensed": true`. There is nothing
+else to configure: the key is signed by the seller, and IzgoN verifies that
+signature offline with a public key it already carries.
+
+What this does and does not do, stated plainly: nobody can forge a key without the
+seller's private half, but IzgoN publishes its own source, so anyone can delete the
+check. That is a breach of the licence with a legal remedy, not a technical
+impossibility. The key is an honest record of who paid, not a lock.
 
 ---
 
