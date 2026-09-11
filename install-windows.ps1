@@ -38,12 +38,38 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Read-Host "  Press Enter to close"
     exit 1
 }
-docker info 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
+# Native stderr must not become a terminating error here - we want to report
+# this failure in plain words, not as a red PowerShell stack.
+$prevEAP = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$dockerSays = (& docker info 2>&1 | Out-String)
+$dockerOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEAP
+
+if (-not $dockerOk) {
     Say ""
-    Say "  Docker is installed but the engine is not running." "Yellow"
-    Say "  Start Docker Desktop, wait until it says 'Engine running', then"
-    Say "  double-click IzgoN-Setup.cmd again."
+    Say "  Docker is installed, but its engine is not running." "Yellow"
+    Say ""
+    Say "  This is a Docker problem, not an IzgoN one. Almost always it is the"
+    Say "  first of these:"
+    Say ""
+    Say "   1. Docker Desktop has never been opened." "White"
+    Say "      Start menu -> Docker Desktop -> accept the terms -> wait until it"
+    Say "      says 'Engine running' at the bottom left. First start takes a"
+    Say "      minute or three. Then run this setup again."
+    Say ""
+    Say "   2. WSL 2 needs updating." "White"
+    Say "      Open Terminal as administrator and run:"
+    Say "          wsl --update" "White"
+    Say "          wsl --set-default-version 2" "White"
+    Say "      Restart the computer, open Docker Desktop, then run this again."
+    Say ""
+    Say "   3. Virtualization is off in the BIOS." "White"
+    Say "      Task Manager -> Performance -> CPU. If 'Virtualization' says"
+    Say "      Disabled, it has to be turned on in the BIOS."
+    Say ""
+    Say "  What Docker actually said:" "DarkGray"
+    Write-Host ("      " + ($dockerSays.Trim() -split "`n")[0]) -ForegroundColor DarkGray
     Say ""
     Read-Host "  Press Enter to close"
     exit 1
