@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.2 — 2026-09-12
+
+### Fixed
+
+- **A licence key that lost its trailing `=` was refused as a forgery.** Every
+  key ends in `==`, and that is exactly the character an email client trims, a
+  web form eats, or a customer deletes by hand because it looks like leftover
+  punctuation. The signature is made over the padded payload string, so a key
+  missing its padding failed verification and came back "unlicensed" — a paying
+  customer looking at the same screen as someone who never paid, with nothing on
+  either side to explain why. Padding carries no information, so it is now
+  restored before the signature is checked. Surrounding whitespace and the
+  quotes people copy along with a `.env` line are stripped too.
+
+  Found by feeding the validator a key mangled every way a key gets mangled
+  between an invoice and a server. Forgery detection is untouched and was
+  re-tested against it: a key signed by any other private key is still refused,
+  trimmed or not.
+
+- The seller's issuing tool checks keys the same way, so `check` can no longer
+  say a key is good when the buyer's server would say otherwise.
+
 ## 1.2.1 — 2026-09-12
 
 - **The seller's public key ships for real.** 1.2.0 went out with a placeholder

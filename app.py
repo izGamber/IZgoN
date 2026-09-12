@@ -380,12 +380,27 @@ FREE_TIER_SYNC_LIMIT = int(os.environ.get("DATAPULSE_FREE_TIER_LIMIT", "10000"))
 KEY_PREFIX = "IZG2-"
 
 
+def _b64norm(text: str) -> str:
+    """Canonical base64url padding. Every licence key ends in '==', and
+    trailing '=' is the character most likely to be lost on the way to a
+    customer's .env - trimmed by hand, eaten by a form, cut by a shell. The
+    signature is made over the padded payload string, so a key that lost its
+    padding would fail to verify even though nothing about it was forged.
+    Padding carries no information, so restoring it is safe."""
+    stripped = text.strip().rstrip("=")
+    return stripped + "=" * (-len(stripped) % 4)
+
+
+def _b64d(text: str) -> bytes:
+    return base64.urlsafe_b64decode(_b64norm(text).encode())
+
+
 def _load_public_key(b64: str):
     """None rather than an exception: a mangled key must degrade to
     'unlicensed', never take the server down at import time."""
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-        raw = base64.urlsafe_b64decode(b64.encode())
+        raw = _b64d(b64)
         if len(raw) != 32:
             return None
         return Ed25519PublicKey.from_public_bytes(raw)
@@ -398,6 +413,10 @@ def validate_license(key: Optional[str], public_key_b64: Optional[str] = None) -
     None otherwise. Never raises."""
     if not key:
         return None
+
+    # A key copied out of an email arrives with whitespace around it more often
+    # than not, and sometimes with quotes from a .env line.
+    key = key.strip().strip('"').strip("'").strip()
 
     if key.startswith("DPC-"):
         # A key from the old HMAC scheme. Refused rather than honoured: that
@@ -419,12 +438,13 @@ def validate_license(key: Optional[str], public_key_b64: Optional[str] = None) -
         if not key.startswith(KEY_PREFIX) or "." not in key:
             return None
         payload_b64, sig_b64 = key[len(KEY_PREFIX):].rsplit(".", 1)
-        signature = base64.urlsafe_b64decode(sig_b64.encode())
+        # Verify against the canonical padded form, which is what was signed.
+        payload_b64 = _b64norm(payload_b64)
         try:
-            pub.verify(signature, payload_b64.encode())
+            pub.verify(_b64d(sig_b64), payload_b64.encode())
         except InvalidSignature:
             return None
-        return json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+        return json.loads(_b64d(payload_b64).decode())
     except Exception:
         return None
 
@@ -455,7 +475,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="IzgoN", version="1.2.1", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.2.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
