@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 — 2026-09-12
+
+- **The seller's public key ships for real.** 1.2.0 went out with a placeholder
+  where the verifying key belongs, so no licence could have validated against
+  it. The real Ed25519 public key is in place now. Verified: a licence signed by
+  any other private key is rejected, a correctly signed one validates, and a
+  missing key simply reads as unlicensed.
+
 ## 1.2.0 — 2026-09-11
 
 The licence check did not check anything. This release makes it real, and it is

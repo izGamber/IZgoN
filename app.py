@@ -373,7 +373,7 @@ def real_metrics() -> dict:
 SELLER_PUBLIC_KEY = os.environ.get(
     "DATAPULSE_LICENSE_PUBKEY",
     # Ed25519 public key, base64url. Public by design - it only verifies.
-    "__SELLER_PUBLIC_KEY__",
+    "G-7lp8KpNF0PKKwO7JSt0j0Cw3_q9ubPPYGImHVzCsA=",
 )
 FREE_TIER_SYNC_LIMIT = int(os.environ.get("DATAPULSE_FREE_TIER_LIMIT", "10000"))
 
@@ -455,7 +455,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="IzgoN", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.2.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
