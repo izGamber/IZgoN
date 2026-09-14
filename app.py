@@ -470,8 +470,14 @@ def real_metrics() -> dict:
 
     saved_pct = round((1 - (total_sent / total_full)) * 100, 2) if total_full else 0.0
     up_pct = round((1 - (up_sent / up_full)) * 100, 2) if up_full else None
-    # The only figure a per-device metered SIM cares about: both directions of
-    # the same transaction, over the events where both were measured.
+    # Both directions of the same transaction, over the events where both were
+    # measured - against a baseline where the full state travels each way.
+    #
+    # That baseline is a client that polls and gets everything back, NOT a
+    # device that only reports: a reporting device was never receiving the full
+    # state, so it has nothing to save in that direction and its figure is
+    # uplink_saved_pct. Naming the wrong one is how an honest measurement turns
+    # into a misleading claim.
     both = None
     if up_rows and up_full:
         with _conn() as conn:
@@ -712,7 +718,7 @@ async def lifespan(_app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="IzgoN", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.4.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

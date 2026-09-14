@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.4.1 — 2026-09-14
+
+One correction, and it is the kind worth its own release rather than a quiet
+edit: 1.4.0 shipped documentation that got the three-number distinction right
+and then printed the wrong one.
+
+### Fixed
+
+- `benchmark.py --conditional` labelled the **both ways** figure as "what a
+  device on its own metered SIM pays against". It is not. That figure is
+  measured against a baseline where the full state travels in *both*
+  directions — a client that polls and gets everything back. A device that only
+  reports was never receiving the full state, so it has nothing to save in that
+  direction, and its number is the **report** figure: 39.9 % at a 5 % change
+  rate, not 64.9 %.
+
+  The benchmark now prints all three, each named with the wiring it belongs to,
+  and the same wrong framing is corrected in a comment in `app.py` beside
+  `both_ways_saved_pct`. `BENCHMARK.md` and `README.md` already said it
+  correctly; the code did not, and code people run is what they believe.
+
+  No behaviour changed — the measured numbers were right, only the sentence
+  naming them was wrong. 65 + 30 checks still pass unchanged.
+
 ## 1.4.0 — 2026-09-14
 
 The release that fixes what IzgoN was measuring.

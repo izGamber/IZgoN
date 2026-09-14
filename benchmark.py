@@ -496,7 +496,17 @@ def main():
         print("-" * 58)
         print(f"{'BOTH WAYS saved':<28}"
               f"{human(both_naive - both_actual) + f'  ({both_pct:.1f}%)':>28}")
-        print("  This is the figure a device on its own metered SIM pays against.")
+        # Three wiring diagrams, three numbers. Naming the wrong one here is how
+        # an honest measurement turns into a misleading claim: BOTH WAYS is
+        # measured against a baseline where the full state travels in both
+        # directions, which is a polling client - not a reporting device. A
+        # device that only uploads was never receiving the full state back, so
+        # it has nothing to save in that direction. Its number is REPORT.
+        print("  REPLY  is your number if IzgoN sits on a gateway and the")
+        print("         metered link runs from it to your backend.")
+        print("  REPORT is your number if every device is on its own SIM.")
+        print("  BOTH   is your number only if the full state travels both")
+        print("         ways today - a client that polls and gets everything back.")
     print("-" * 58)
     print(f"{'Wall time':<28}{f'{wall:.1f} s':>28}")
     if wall > 0:
