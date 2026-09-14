@@ -230,8 +230,8 @@ def replay_plan(grouped, prefix):
                 yield f"{prefix}{nid}", seq[i]
 
 
-def post(url, payload, timeout, api_key):
-    body = json.dumps({"state": payload}, separators=(",", ":")).encode()
+def post(url, body_obj, timeout, api_key):
+    body = json.dumps(body_obj, separators=(",", ":")).encode()
     req = urllib.request.Request(
         url,
         data=body,
@@ -242,7 +242,7 @@ def post(url, payload, timeout, api_key):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
     elapsed_ms = (time.perf_counter() - started) * 1000
-    return raw, elapsed_ms
+    return raw, elapsed_ms, len(body)
 
 
 def human(n):
@@ -280,6 +280,11 @@ def main():
     p.add_argument("--price-per-mb", type=float, default=0.0,
                    help="your data cost per MB, to print a money figure (e.g. 0.05)")
     p.add_argument("--currency", default="USD")
+    p.add_argument("--conditional", action="store_true",
+                   help="use conditional sync: when a node's report is identical "
+                        "to the one it last sent, send back the server's checksum "
+                        "instead of the report. Measures the request side too — "
+                        "the half a device pays for on its own SIM.")
     args = p.parse_args()
 
     if not 0.0 <= args.change_rate <= 1.0:
@@ -363,13 +368,51 @@ def main():
     started = time.perf_counter()
     done = 0
 
+    # Conditional-sync bookkeeping, mirroring izgon_client.py: what each node
+    # last sent, and the token the server answered with.
+    last_sent = {}
+    tokens = {}
+    epoch = f"bench{args.seed}"
+    up_naive = 0      # request bytes if every call carried the whole report
+    up_actual = 0     # request bytes actually put on the wire
+    skipped_uploads = 0
+
+    def weigh(obj):
+        return len(json.dumps(obj, separators=(",", ":")).encode())
+
     for node_id, state in plan:
         payload_bytes = len(json.dumps(state, separators=(",", ":")).encode())
         naive_bytes += payload_bytes
 
+        full_body = {"state": state}
+        if args.conditional:
+            full_body["epoch"] = epoch
+        up_naive += weigh(full_body)
+
+        body = full_body
+        conditional_try = False
+        if args.conditional and tokens.get(node_id) and last_sent.get(node_id) == state:
+            short = {"checksum": tokens[node_id], "epoch": epoch}
+            # Never spend more to save less - same rule the engine applies when
+            # it chooses between a delta and the whole state.
+            if weigh(short) < weigh(full_body):
+                body = short
+                conditional_try = True
+
         try:
-            raw, ms = post(f"{base}/api/nodes/{node_id}/sync", state,
-                           args.timeout, args.api_key)
+            raw, ms, wire = post(f"{base}/api/nodes/{node_id}/sync", body,
+                                 args.timeout, args.api_key)
+            up_actual += wire
+            if conditional_try and json.loads(raw).get("status") == "SEND_STATE":
+                # The server does not hold what we thought. Pay for both calls -
+                # hiding the retry would flatter the figure this exists to test.
+                raw, ms2, wire2 = post(f"{base}/api/nodes/{node_id}/sync", full_body,
+                                       args.timeout, args.api_key)
+                up_actual += wire2
+                ms += ms2
+                conditional_try = False
+            elif conditional_try:
+                skipped_uploads += 1
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
                 print("\nHTTP 401 — wrong or missing API key.")
@@ -408,6 +451,9 @@ def main():
                 json.dumps(delta, separators=(",", ":")).encode()
             )
         actual_bytes += sent
+        last_sent[node_id] = state
+        if parsed.get("checksum"):
+            tokens[node_id] = parsed["checksum"]
 
         status = parsed.get("status")
         if status == "NO_CHANGE" or sent == 0:
@@ -433,9 +479,24 @@ def main():
     print(f"{'  changed (delta sent)':<28}{changed - full_state:>28,}")
     print(f"{'  sent whole (delta bigger)':<28}{full_state:>28,}")
     print("-" * 58)
-    print(f"{'Without IzgoN':<28}{human(naive_bytes):>28}")
-    print(f"{'With IzgoN':<28}{human(actual_bytes):>28}")
-    print(f"{'Saved':<28}{human(saved) + f'  ({pct_saved:.1f}%)':>28}")
+    print(f"{'REPLY  without IzgoN':<28}{human(naive_bytes):>28}")
+    print(f"{'REPLY  with IzgoN':<28}{human(actual_bytes):>28}")
+    print(f"{'REPLY  saved':<28}{human(saved) + f'  ({pct_saved:.1f}%)':>28}")
+    if args.conditional:
+        up_saved = up_naive - up_actual
+        up_pct = (up_saved / up_naive * 100) if up_naive else 0.0
+        both_naive = naive_bytes + up_naive
+        both_actual = actual_bytes + up_actual
+        both_pct = ((both_naive - both_actual) / both_naive * 100) if both_naive else 0.0
+        print("-" * 58)
+        print(f"{'REPORT without IzgoN':<28}{human(up_naive):>28}")
+        print(f"{'REPORT with IzgoN':<28}{human(up_actual):>28}")
+        print(f"{'REPORT saved':<28}{human(up_saved) + f'  ({up_pct:.1f}%)':>28}")
+        print(f"{'  reports never uploaded':<28}{skipped_uploads:>28,}")
+        print("-" * 58)
+        print(f"{'BOTH WAYS saved':<28}"
+              f"{human(both_naive - both_actual) + f'  ({both_pct:.1f}%)':>28}")
+        print("  This is the figure a device on its own metered SIM pays against.")
     print("-" * 58)
     print(f"{'Wall time':<28}{f'{wall:.1f} s':>28}")
     if wall > 0:

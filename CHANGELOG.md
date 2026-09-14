@@ -1,5 +1,99 @@
 # Changelog
 
+## 1.4.0 — 2026-09-14
+
+The release that fixes what IzgoN was measuring.
+
+Every version up to 1.3.0 shrank the **reply** and left the **report** alone:
+the device uploaded its full state on every cycle no matter what came back. On
+a gateway, where the metered link is the one going upstream to the backend,
+that is the whole job and the published 94.3 % is the right number. For a fleet
+where each device carries its own SIM — the case on the front page and in the
+video — it was half the transaction, and quoting the reply figure there
+overstated what the bill would do. Anyone with a packet capture could have said
+so, and would have been right.
+
+### Added
+
+- **Conditional sync.** Send `checksum` instead of `state` and the report never
+  goes on the wire. The server compares the token against the baseline it holds
+  and answers `NO_CHANGE` — or `SEND_STATE`, and the client repeats the call
+  with the state.
+
+  The token is opaque and produced by this server, so there is no canonical-JSON
+  spec for a client to reproduce and get subtly wrong in another language: store
+  the last `checksum` you were handed, send it back when your own report has not
+  changed. A `SEND_STATE` round trip is not logged as a sync event and does not
+  count against the free tier — nothing was synchronised, nothing was measured,
+  and charging for it would be dishonest.
+
+  Measured, same runs as before, 5 % change rate: reply 94.3 % saved, report
+  39.9 %, both directions against a full-state-both-ways baseline 64.9 %. Three
+  wiring diagrams, three numbers — **a per-SIM fleet's number is 39.9 %**, not
+  64.9 %, because a reporting device was never receiving the full state back and
+  so has nothing to save in that direction. The report side also saves less than
+  the count of unchanged reports suggests, because the token still travels:
+  72 bytes against roughly 180. That is arithmetic, not modesty.
+
+- **`epoch`.** An opaque token for the lifetime of the caller's copy of the
+  state. When it changes, the server answers with the whole state instead of a
+  delta. This closes a failure that was silent: a backend that lost its mirror
+  kept receiving deltas, merged them into nothing, and reported success.
+  Sparkplug solves the same problem with a birth/death sequence number.
+
+  Epochs are held in memory, so restarting IzgoN also forces one `FULL_STATE`
+  per node using them — it errs towards sending too much, the only safe
+  direction. A `SEND_STATE` answer deliberately does not mark the epoch as seen;
+  otherwise the retry that carried the state would have been answered with a
+  delta the new mirror could not apply, which is the exact bug this prevents.
+
+- **Both directions in the metrics and on the dashboard.** `uplink_saved_pct`,
+  `both_ways_saved_pct`, and a second dashboard card. Events logged before this
+  version carry no request measurement and are excluded from those figures
+  rather than counted as a saving nobody measured. A server whose clients all
+  still upload full state reads 0 %, and says why.
+
+- **`benchmark.py --conditional`** measures the request side and prints the
+  both-ways figure, so the claim can be reproduced rather than believed.
+
+### Changed
+
+- `checksum` in every reply is now 32 characters rather than 64. A device
+  echoing it back pays for every character on its own SIM, and against a
+  200-byte report a 64-character receipt was most of the saving. The full
+  SHA-256 is still what the engine compares internally; only the token handed to
+  clients is shortened. 128 bits is far past what this needs — a collision costs
+  one missed update on one node, and the inputs are consecutive reports from the
+  same device, not attacker-chosen.
+
+- The reference client keeps the epoch, the last report and the last token per
+  node, and **measures both candidate requests before choosing**: if the report
+  is smaller than the token would be, it sends the report. Paying more bytes to
+  "save" bytes is not a saving — the same rule the engine already applied when
+  choosing between a delta and the whole state. `conditional=False` restores the
+  old always-send-state behaviour.
+
+- `README.md` and `BENCHMARK.md` now separate reply from report everywhere, and
+  say which number belongs to which topology. Two limits are stated that were
+  not: a cellular bill carries 50–54 bytes of packet header in both directions
+  regardless of payload (`NO_CHANGE` is 0 bytes of payload, not 0 on the
+  invoice), and platforms such as Home Assistant already suppress unchanged
+  values on their own.
+
+### Fixed
+
+- Databases created by an older version are migrated in place. `CREATE TABLE IF
+  NOT EXISTS` leaves an existing table exactly as it was, so upgrading over a
+  log with real history would otherwise have failed on the first insert naming
+  the new columns.
+
+### Verified
+
+65 checks covering conditional sync, epochs, the migration, both-direction
+accounting and the reference client's state machine, plus full regression of
+everything in 1.3.0 — which still passes its own 30 checks unchanged. The
+benchmark reproduces 94.3 / 80.5 / 35.3 on the reply side exactly as before.
+
 ## 1.3.0 — 2026-09-14
 
 Four additions, each one a thing a fleet operator asked for before a feature

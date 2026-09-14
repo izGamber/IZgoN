@@ -6,7 +6,7 @@
 <title>IzgoN — send only what changed</title>
 <meta name="description" content="Self-hosted delta-sync server for device fleets. Sends only what changed and shows you the bytes you stopped paying for.">
 <meta property="og:title" content="IzgoN — send only what changed">
-<meta property="og:description" content="Self-hosted delta-sync server for device fleets. 94.3% less data at a 5% change rate — measured, and the case where it does not help is published too.">
+<meta property="og:description" content="Self-hosted delta-sync server for device fleets. 94.3% less data coming back at a 5% change rate, 39.9% less going up with conditional sync — measured, and the case where it does not help is published too.">
 <meta property="og:type" content="website">
 <link rel="icon" href="https://izgon-api.onrender.com/icon-192.png">
 <style>
@@ -154,7 +154,7 @@
 .calcwrap{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px;margin:18px 0}
 .calcwrap label{display:block;font-size:13px;font-weight:600;margin-bottom:5px}
 .calcwrap .hint{font-weight:400;opacity:.7;font-size:12px}
-.calcwrap input,.calcwrap textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit;font-size:14px}
+.calcwrap input,.calcwrap textarea,.calcwrap select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:inherit;font-size:14px}
 .calcwrap textarea{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;min-height:96px;resize:vertical}
 .calcfull{grid-column:1/-1}
 .calcout{margin-top:6px}
@@ -271,6 +271,7 @@
           <tr><td><code>NO_CHANGE</code></td><td data-i="how_r1b"></td><td data-i="how_r1c"></td></tr>
           <tr><td><code>SYNC_REQUIRED</code></td><td data-i="how_r2b"></td><td data-i="how_r2c"></td></tr>
           <tr><td><code>FULL_STATE</code></td><td data-i="how_r3b"></td><td data-i="how_r3c"></td></tr>
+          <tr><td><code>SEND_STATE</code></td><td data-i="how_r4b"></td><td data-i="how_r4c"></td></tr>
         </tbody>
       </table>
     </div>
@@ -278,11 +279,12 @@
     <pre><code>{
   "node_id": "sensor-01",
   "status": "SYNC_REQUIRED",
-  "checksum": "e163cdfd20a3617d2fe560a3dd849c2fb8e7c8041c7a49fd225bea93be26ad33",
+  "checksum": "e163cdfd20a3617d2fe560a3dd849c2f",
   "delta": { "temp": 22.1 },
   "bytes_full": 32,
   "bytes_sent": 13
 }</code></pre>
+    <p data-i="how_cond"></p>
     <p data-i="how_stack"></p>
   </div></section>
 
@@ -332,6 +334,7 @@ docker compose up -d</code></pre>
         </tbody>
       </table>
     </div>
+    <p class="note" data-i="num_dir"></p>
     <div class="note"><b data-i="num_note_b"></b> <span data-i="num_note"></span></div>
 
     <h3 data-i="own_h"></h3>
@@ -366,6 +369,7 @@ docker compose up -d</code></pre>
     <h2 data-i="ca_h"></h2>
     <p data-i="ca_p"></p>
     <div class="calcwrap">
+      <div class="calcfull"><label data-i="ca_l0"></label><select id="cMode"><option value="sim" data-i="ca_m1"></option><option value="gw" data-i="ca_m2"></option></select></div>
       <div><label data-i="ca_l1"></label><input id="cDev" type="number" min="1" value="100"></div>
       <div><label data-i="ca_l2"></label><input id="cRep" type="number" min="1" value="288"></div>
       <div class="calcfull"><label data-i="ca_l3"></label><textarea id="cJson">{"device_id":"truck-114","lat":44.5372,"lon":18.6673,"speed":0,"ignition":false,"fuel_pct":62,"odo_km":183422,"battery_v":12.6,"signal":-71,"fw":"2.4.1"}</textarea></div>
@@ -469,6 +473,9 @@ bs:{
  nav_calc:"Kalkulator",
  ca_h:"Koliko biste uštedjeli — izračunajte na svojim podacima",
  ca_p:"Zalijepite jedan stvarni izvještaj sa svog uređaja i unesite svoje brojke. Račun se radi u vašem pregledniku; ništa se ne šalje nama.",
+ ca_l0:"Gdje se plaća prenos",
+ ca_m1:"Svaki uređaj ima svoju SIM karticu (uređaj plaća slanje)",
+ ca_m2:"IzgoN je na gatewayu; plaća se veza prema backendu",
  ca_l1:"Broj uređaja",
  ca_l2:"Izvještaja po uređaju dnevno (svakih 5 min = 288)",
  ca_l3:"Jedan vaš izvještaj, kako ga uređaj stvarno šalje (JSON)",
@@ -484,7 +491,7 @@ bs:{
  ca_yes:"Licenca se isplati za {d} {u}. Sve poslije toga je čista ušteda.", ca_d1:"dan", ca_dn:"dana",
  ca_no:"Po ovim brojkama vam se ne isplati. Radije nemojte kupiti — IzgoN pomaže samo kad se izvještaji šalju često i kad se malo toga mijenja između njih.",
  ca_bad:"To nije ispravan JSON. Zalijepite jedan cijeli izvještaj, sa vitičastim zagradama.",
- ca_note:"Procjena po istom pravilu koje server stvarno primjenjuje: kad se ništa ne promijeni ne šalje se ništa, inače putuju samo promijenjena polja, i nikad više od cijelog stanja. Za broj kojem možete vjerovati, pustite benchmark na izvozu svojih izvještaja — komanda je u BENCHMARK.md.",
+ ca_note:"Račun po istom pravilu koje server stvarno primjenjuje. Kod SIM kartice po uređaju ušteda dolazi od toga što se nepromijenjen izvještaj uopšte ne šalje — umjesto njega putuje kratak kontrolni zbir. Kod gatewaya ušteda je na odgovoru prema backendu. Dva različita broja, jer su dva različita puta. I još nešto pošteno: operater naplaćuje i 50–54 bajta zaglavlja po paketu u oba smjera, pa „ništa se ne šalje\" znači nula korisnog tereta, a ne nula na računu. Za broj kojem možete vjerovati, pustite benchmark na izvozu svojih izvještaja — komanda je u BENCHMARK.md.",
 
  nav_faq:"Pitanja",
  nav_team:"Autor",
@@ -495,6 +502,9 @@ bs:{
  how_th1:"Odgovor",
  how_th2:"Šta nosi",
  how_th3:"Šta klijent radi",
+ how_r4b:"ništa — server traži cijelo stanje",
+ how_r4c:"ponovi poziv, ovaj put sa stanjem",
+ how_cond:"Uslovna sinhronizacija: ako se od prošlog puta ništa nije promijenilo, uređaj ne šalje izvještaj nego kratki checksum iz prošlog odgovora — 47 bajta umjesto cijelog izvještaja. Ako se server i uređaj ne slažu, odgovor je SEND_STATE i uređaj pošalje stanje. Taj prazan hod se ne broji ni kao sinhronizacija ni u besplatnu kvotu. Ovo je jedini dio koji štedi kad svaki uređaj ima svoju SIM karticu.",
  how_r1b:"ništa, 0 bajta",
  how_r1c:"ništa — obje strane se već slažu",
  how_r2b:"samo promijenjene ključeve",
@@ -537,7 +547,7 @@ bs:{
  dl_win:"Preuzmi za Windows", dl_src:"Kod na GitHubu", dl_demo:"Živi demo",
  cta_sub:"Besplatno do 10.000 sinhronizacija. Bez naloga, bez kartice. Radi na tvom serveru.",
  flow_a:"stanje uređaja           izmijenjeno", flow_b:"samo delta", flow_c:"nula bajta",
- s1:"ušteda pri 5 % promjene", s2:"pri 70 % — tu prestaje da se isplati",
+ s1:"ušteda na odgovoru pri 5 % promjene", s2:"pri 70 % — tu prestaje da se isplati",
  s3:"besplatnih sinhronizacija", s4:"jednokratno, bez pretplate",
  what_h:"Šta je ovo, tačno",
  what_p1:"IzgoN je server, ne obična aplikacija. Stoji između tvojih uređaja i tvog backenda. Svaki uređaj pošalje svoje trenutno stanje; IzgoN ga uporedi sa zadnjim koje je vidio za taj uređaj i vrati jedno od tri: NO_CHANGE (nula bajta), minimalnu deltu, ili cijelo stanje kad bi delta bila veća od njega.",
@@ -558,7 +568,8 @@ bs:{
  inst2_h:"2. Jedna komanda", inst2_p:"Slika je objavljena — nema kloniranja ni građenja. Radi i sama, bez Redisa: tada stanje čuva u memoriji i kaže ti to. Za postavku koja preživi restart, pokreni Redis uz nju (docker-compose.yml u repou):",
  inst3_h:"3. Sa Redisom (preporučeno)", inst3_p:"Ovako baze stanja preživljavaju restart:",
  inst_after:"Dashboard je na http://localhost:8000.",
- num_h:"Brojke, i gdje ne valjaju", num_p:"Sve izmjereno na živoj instanci, ponovljivo komandama iz BENCHMARK.md. 50 čvorova × 100 izvještaja = 5.000 sinhronizacija po prolazu.",
+ num_h:"Brojke, i gdje ne valjaju", num_dir:"Ovo je ušteda na odgovoru — bajtovima koje server vraća. Uređaj svoje izvještaje i dalje šalje, osim ako koristi uslovnu sinhronizaciju: tada nepromijenjen izvještaj uopšte ne putuje, nego umjesto njega ide kratak kontrolni zbir, i ušteda na slanju pri 5 % promjene iznosi 39,9 %. Ako svaki uređaj ima svoju SIM karticu, vaš broj je 39,9 %, ne 94,3 %.",
+ num_p:"Sve izmjereno na živoj instanci, ponovljivo komandama iz BENCHMARK.md. 50 čvorova × 100 izvještaja = 5.000 sinhronizacija po prolazu.",
  th1:"Stopa promjene", th2:"Bez IzgoN-a", th3:"Sa IzgoN-om", th4:"Ušteda",
  num_note_b:"Pročitaj zadnji red.", num_note:"Kad se skoro svaki izvještaj razlikuje od prethodnog, ušteda padne na 35,3 % i najveći dio razloga da ovo uopšte pokrećeš nestaje. To je iskrena granica alata i zato stoji ovdje, a ne sakriveno.",
  own_h:"Ne vjeruj mojoj brojci — izmjeri svoju", own_p:"Izvezi nekoliko hiljada stvarnih izvještaja svojih uređaja (JSON niz ili JSON Lines) i pusti:",
@@ -585,6 +596,9 @@ en:{
  nav_calc:"Calculator",
  ca_h:"What it would save you — on your own numbers",
  ca_p:"Paste one real report from your device and enter your figures. The maths runs in your browser; nothing is sent to us.",
+ ca_l0:"Where the traffic is paid for",
+ ca_m1:"Each device on its own SIM (the device pays to upload)",
+ ca_m2:"IzgoN on a gateway; the metered link runs to your backend",
  ca_l1:"Number of devices",
  ca_l2:"Reports per device per day (every 5 min = 288)",
  ca_l3:"One of your reports, exactly as the device sends it (JSON)",
@@ -600,7 +614,7 @@ en:{
  ca_yes:"The licence pays for itself in {d} {u}. Everything after that is saving.", ca_d1:"day", ca_dn:"days",
  ca_no:"On these numbers it would not pay off. Better not to buy — IzgoN only helps when reports are frequent and little changes between them.",
  ca_bad:"That is not valid JSON. Paste one whole report, braces included.",
- ca_note:"Estimated by the same rule the server actually applies: nothing changed sends nothing, otherwise only the changed fields travel, and never more than the whole state. For a number you can trust, run the benchmark against an export of your own reports — the command is in BENCHMARK.md.",
+ ca_note:"Worked out with the same rule the server actually applies. On a per-device SIM the saving comes from not uploading an unchanged report at all — a short checksum travels instead. On a gateway the saving is on the reply going to your backend. Two different numbers because they are two different links. And one more honest point: your operator also bills 50–54 bytes of packet header in each direction, so \"nothing is sent\" means zero payload, not zero on the invoice. For a number you can trust, run the benchmark on an export of your own reports — the command is in BENCHMARK.md.",
 
  nav_faq:"FAQ",
  nav_team:"Author",
@@ -611,6 +625,9 @@ en:{
  how_th1:"Answer",
  how_th2:"What it carries",
  how_th3:"What the client does",
+ how_r4b:"nothing — the server is asking for the full state",
+ how_r4c:"repeat the call, this time carrying the state",
+ how_cond:"Conditional sync: when nothing has changed since last time, the device sends back the short checksum from the previous reply instead of the report — 47 bytes rather than the whole thing. If the two sides disagree the answer is SEND_STATE and the device sends the state. That empty round trip counts neither as a sync nor against the free tier. This is the only part that saves anything when each device carries its own SIM.",
  how_r1b:"nothing, 0 bytes",
  how_r1c:"nothing — both sides already agree",
  how_r2b:"only the changed keys",
@@ -653,7 +670,7 @@ en:{
  dl_win:"Download for Windows", dl_src:"Source on GitHub", dl_demo:"Live demo",
  cta_sub:"Free up to 10,000 syncs. No account, no card. Runs on your own server.",
  flow_a:"device state              changed", flow_b:"delta only", flow_c:"zero bytes",
- s1:"saved at a 5% change rate", s2:"at 70% — where it stops being worth it",
+ s1:"saved on the reply at a 5% change rate", s2:"at 70% — where it stops being worth it",
  s3:"free syncs, no key needed", s4:"one-time, no subscription",
  what_h:"What this actually is",
  what_p1:"IzgoN is a server, not a desktop app. It sits between your devices and your backend. Each device POSTs its current state; IzgoN compares it against the last state it saw for that device and returns one of three things: NO_CHANGE (zero bytes), a minimal delta, or the whole state when a delta would be bigger than the state it replaces.",
@@ -674,7 +691,8 @@ en:{
  inst2_h:"2. One command", inst2_p:"The image is published — no cloning, no building. It runs on its own without Redis: it then keeps node state in memory and says so. For a setup that survives a restart, run Redis beside it (docker-compose.yml in the repo):",
  inst3_h:"3. With Redis (recommended)", inst3_p:"This is how the per-node baselines survive a restart:",
  inst_after:"The dashboard is on http://localhost:8000.",
- num_h:"The numbers, including where they fail", num_p:"All measured against a running instance and reproducible with the commands in BENCHMARK.md. 50 nodes × 100 reports = 5,000 syncs per run.",
+ num_h:"The numbers, including where they fail", num_dir:"This is the saving on the reply — the bytes the server sends back. Devices still upload their reports unless they use conditional sync, where an unchanged report is never sent at all and a short checksum travels instead: 39.9 % saved on the report side at a 5 % change rate. If each device carries its own SIM, your number is 39.9 %, not 94.3 %.",
+ num_p:"All measured against a running instance and reproducible with the commands in BENCHMARK.md. 50 nodes × 100 reports = 5,000 syncs per run.",
  th1:"Change rate", th2:"Without IzgoN", th3:"With IzgoN", th4:"Saved",
  num_note_b:"Read the last row.", num_note:"When almost every report differs from the one before it, the saving falls to 35.3% and most of the reason to run this disappears. That is the honest boundary of the tool, which is why it is here rather than hidden.",
  own_h:"Don't trust my number — measure yours", own_p:"Export a few thousand real reports from your devices (JSON array or JSON Lines) and run:",
@@ -701,6 +719,9 @@ de:{
  nav_calc:"Rechner",
  ca_h:"Was es Ihnen sparen würde — mit Ihren eigenen Zahlen",
  ca_p:"Fügen Sie eine echte Meldung Ihres Geräts ein und tragen Sie Ihre Werte ein. Gerechnet wird in Ihrem Browser; nichts wird an uns gesendet.",
+ ca_l0:"Wo der Datenverkehr bezahlt wird",
+ ca_m1:"Jedes Gerät mit eigener SIM (das Gerät zahlt für den Upload)",
+ ca_m2:"IzgoN auf einem Gateway; die bezahlte Strecke führt zum Backend",
  ca_l1:"Anzahl der Geräte",
  ca_l2:"Meldungen pro Gerät und Tag (alle 5 Min = 288)",
  ca_l3:"Eine Ihrer Meldungen, genau wie das Gerät sie sendet (JSON)",
@@ -716,7 +737,7 @@ de:{
  ca_yes:"Die Lizenz hat sich nach {d} {u} bezahlt gemacht. Alles danach ist Ersparnis.", ca_d1:"Tag", ca_dn:"Tagen",
  ca_no:"Mit diesen Zahlen lohnt es sich nicht. Kaufen Sie lieber nicht — IzgoN hilft nur bei häufigen Meldungen, zwischen denen sich wenig ändert.",
  ca_bad:"Das ist kein gültiges JSON. Fügen Sie eine vollständige Meldung ein, mit geschweiften Klammern.",
- ca_note:"Geschätzt nach derselben Regel, die der Server tatsächlich anwendet: ohne Änderung wird nichts gesendet, sonst reisen nur die geänderten Felder, und nie mehr als der ganze Zustand. Für eine belastbare Zahl lassen Sie den Benchmark über einen Export Ihrer eigenen Meldungen laufen — der Befehl steht in BENCHMARK.md.",
+ ca_note:"Berechnet nach derselben Regel, die der Server tatsächlich anwendet. Bei einer SIM pro Gerät entsteht die Ersparnis dadurch, dass ein unveränderter Bericht gar nicht erst hochgeladen wird — stattdessen reist eine kurze Prüfsumme. Beim Gateway liegt die Ersparnis in der Antwort an Ihr Backend. Zwei verschiedene Zahlen, weil es zwei verschiedene Strecken sind. Und ehrlich bleibt: Ihr Betreiber berechnet je Richtung zusätzlich 50–54 Byte Paket-Header, „es wird nichts gesendet\" heißt also null Nutzlast, nicht null auf der Rechnung. Für eine belastbare Zahl lassen Sie den Benchmark über einen Export Ihrer eigenen Berichte laufen — der Befehl steht in BENCHMARK.md.",
 
  nav_faq:"FAQ",
  nav_team:"Autor",
@@ -727,6 +748,9 @@ de:{
  how_th1:"Antwort",
  how_th2:"Inhalt",
  how_th3:"Was der Client tut",
+ how_r4b:"nichts — der Server fordert den vollen Zustand an",
+ how_r4c:"Aufruf wiederholen, diesmal mit dem Zustand",
+ how_cond:"Bedingte Synchronisation: Hat sich seit dem letzten Mal nichts geändert, schickt das Gerät statt der Meldung die kurze Prüfsumme aus der vorherigen Antwort zurück — 47 Byte statt der ganzen Meldung. Sind sich beide Seiten uneins, lautet die Antwort SEND_STATE und das Gerät sendet den Zustand. Dieser Leerlauf zählt weder als Sync noch gegen das Freikontingent. Das ist der einzige Teil, der etwas spart, wenn jedes Gerät seine eigene SIM hat.",
  how_r1b:"nichts, 0 Bytes",
  how_r1c:"nichts — beide Seiten stimmen überein",
  how_r2b:"nur die geänderten Schlüssel",
@@ -769,7 +793,7 @@ de:{
  dl_win:"Für Windows herunterladen", dl_src:"Quellcode auf GitHub", dl_demo:"Live-Demo",
  cta_sub:"Kostenlos bis 10.000 Syncs. Kein Konto, keine Karte. Läuft auf Ihrem eigenen Server.",
  flow_a:"Gerätezustand            geändert", flow_b:"nur Delta", flow_c:"null Bytes",
- s1:"gespart bei 5 % Änderungsrate", s2:"bei 70 % — hier lohnt es sich nicht mehr",
+ s1:"bei der Antwort gespart, 5 % Änderungsrate", s2:"bei 70 % — hier lohnt es sich nicht mehr",
  s3:"kostenlose Syncs", s4:"einmalig, kein Abo",
  what_h:"Was das genau ist",
  what_p1:"IzgoN ist ein Server, keine Desktop-Anwendung. Er sitzt zwischen Ihren Geräten und Ihrem Backend. Jedes Gerät sendet seinen aktuellen Zustand; IzgoN vergleicht ihn mit dem zuletzt gesehenen und antwortet mit einem von drei Dingen: NO_CHANGE (null Bytes), einem minimalen Delta, oder dem vollen Zustand, wenn das Delta größer wäre.",
@@ -790,7 +814,8 @@ de:{
  inst2_h:"2. Ein Befehl", inst2_p:"Das Image ist veröffentlicht — kein Klonen, kein Bauen. Es läuft auch allein ohne Redis: dann hält es den Zustand im Arbeitsspeicher und sagt es. Für einen Aufbau, der Neustarts übersteht, Redis danebenstellen (docker-compose.yml im Repo):",
  inst3_h:"3. Mit Redis (empfohlen)", inst3_p:"So überstehen die Zustände pro Knoten einen Neustart:",
  inst_after:"Das Dashboard liegt auf http://localhost:8000.",
- num_h:"Die Zahlen, samt ihrer Grenze", num_p:"Alles an einer laufenden Instanz gemessen und mit den Befehlen aus BENCHMARK.md reproduzierbar. 50 Knoten × 100 Meldungen = 5.000 Syncs pro Lauf.",
+ num_h:"Die Zahlen, samt ihrer Grenze", num_dir:"Das ist die Ersparnis bei der Antwort — den Bytes, die der Server zurückschickt. Geräte laden ihre Meldungen weiterhin hoch, außer sie nutzen bedingte Synchronisation: dann wird eine unveränderte Meldung gar nicht gesendet, stattdessen reist eine kurze Prüfsumme, und die Ersparnis beim Senden beträgt bei 5 % Änderungsrate 39,9 %. Hat jedes Gerät seine eigene SIM, ist Ihre Zahl 39,9 % und nicht 94,3 %.",
+ num_p:"Alles an einer laufenden Instanz gemessen und mit den Befehlen aus BENCHMARK.md reproduzierbar. 50 Knoten × 100 Meldungen = 5.000 Syncs pro Lauf.",
  th1:"Änderungsrate", th2:"Ohne IzgoN", th3:"Mit IzgoN", th4:"Gespart",
  num_note_b:"Lesen Sie die letzte Zeile.", num_note:"Wenn sich fast jede Meldung von der vorherigen unterscheidet, fällt die Ersparnis auf 35,3 % und der Grund, das zu betreiben, verschwindet weitgehend. Das ist die ehrliche Grenze des Werkzeugs — deshalb steht sie hier und nicht versteckt.",
  own_h:"Glauben Sie meiner Zahl nicht — messen Sie Ihre", own_p:"Exportieren Sie einige tausend echte Meldungen Ihrer Geräte (JSON-Array oder JSON Lines) und führen Sie aus:",
@@ -817,6 +842,9 @@ fr:{
  nav_calc:"Calculateur",
  ca_h:"Ce que cela vous ferait économiser — sur vos propres chiffres",
  ca_p:"Collez un vrai rapport de votre appareil et saisissez vos chiffres. Le calcul se fait dans votre navigateur ; rien ne nous est envoyé.",
+ ca_l0:"Où le trafic est facturé",
+ ca_m1:"Chaque appareil avec sa propre SIM (l'appareil paie l'envoi)",
+ ca_m2:"IzgoN sur une passerelle ; le lien facturé va vers le backend",
  ca_l1:"Nombre d'appareils",
  ca_l2:"Rapports par appareil et par jour (toutes les 5 min = 288)",
  ca_l3:"Un de vos rapports, tel que l'appareil l'envoie (JSON)",
@@ -832,7 +860,7 @@ fr:{
  ca_yes:"La licence est remboursée en {d} {u}. Tout ce qui suit est une économie.", ca_d1:"jour", ca_dn:"jours",
  ca_no:"Avec ces chiffres, ce n'est pas rentable. Mieux vaut ne pas acheter — IzgoN n'aide que si les rapports sont fréquents et changent peu.",
  ca_bad:"Ce JSON est invalide. Collez un rapport entier, accolades comprises.",
- ca_note:"Estimé selon la règle que le serveur applique réellement : rien ne change, rien n'est envoyé ; sinon seuls les champs modifiés voyagent, et jamais plus que l'état entier. Pour un chiffre fiable, lancez le benchmark sur un export de vos propres rapports — la commande est dans BENCHMARK.md.",
+ ca_note:"Calculé avec la règle que le serveur applique réellement. Avec une SIM par appareil, l'économie vient du fait qu'un rapport inchangé n'est pas envoyé du tout — une courte somme de contrôle circule à sa place. Sur une passerelle, l'économie porte sur la réponse envoyée à votre backend. Deux chiffres différents, parce que ce sont deux liens différents. Et pour rester honnête : votre opérateur facture aussi 50 à 54 octets d'en-tête par paquet dans chaque sens, donc « rien n'est envoyé » signifie zéro charge utile, pas zéro sur la facture. Pour un chiffre fiable, lancez le benchmark sur un export de vos propres rapports — la commande est dans BENCHMARK.md.",
 
  nav_faq:"FAQ",
  nav_team:"Auteur",
@@ -843,6 +871,9 @@ fr:{
  how_th1:"Réponse",
  how_th2:"Contenu",
  how_th3:"Ce que fait le client",
+ how_r4b:"rien — le serveur réclame l'état complet",
+ how_r4c:"refaire l'appel, cette fois avec l'état",
+ how_cond:"Synchronisation conditionnelle : si rien n'a changé depuis la dernière fois, l'appareil renvoie la courte somme de contrôle de la réponse précédente au lieu du rapport — 47 octets plutôt que l'ensemble. Si les deux côtés ne concordent pas, la réponse est SEND_STATE et l'appareil envoie l'état. Cet aller-retour à vide ne compte ni comme une synchronisation ni dans le quota gratuit. C'est la seule partie qui fait économiser quand chaque appareil a sa propre SIM.",
  how_r1b:"rien, 0 octet",
  how_r1c:"rien — les deux côtés sont déjà d'accord",
  how_r2b:"seulement les clés modifiées",
@@ -885,7 +916,7 @@ fr:{
  dl_win:"Télécharger pour Windows", dl_src:"Code sur GitHub", dl_demo:"Démo en ligne",
  cta_sub:"Gratuit jusqu'à 10 000 synchronisations. Sans compte, sans carte. Sur votre propre serveur.",
  flow_a:"état de l'appareil        modifié", flow_b:"delta seulement", flow_c:"zéro octet",
- s1:"économisés à 5 % de changement", s2:"à 70 % — là où cela cesse d'être rentable",
+ s1:"économisés sur la réponse à 5 % de changement", s2:"à 70 % — là où cela cesse d'être rentable",
  s3:"synchronisations gratuites", s4:"paiement unique, sans abonnement",
  what_h:"Ce que c'est exactement",
  what_p1:"IzgoN est un serveur, pas une application de bureau. Il se place entre vos appareils et votre backend. Chaque appareil envoie son état courant ; IzgoN le compare au dernier état vu et renvoie l'une de trois choses : NO_CHANGE (zéro octet), un delta minimal, ou l'état complet lorsque le delta serait plus gros.",
@@ -906,7 +937,8 @@ fr:{
  inst2_h:"2. Une commande", inst2_p:"L'image est publiée — ni clonage ni compilation. Elle fonctionne seule, sans Redis : l'état est alors gardé en mémoire et elle le signale. Pour une installation qui survit à un redémarrage, lancez Redis à côté (docker-compose.yml du dépôt) :",
  inst3_h:"3. Avec Redis (recommandé)", inst3_p:"C'est ainsi que les états par nœud survivent à un redémarrage :",
  inst_after:"Le tableau de bord est sur http://localhost:8000.",
- num_h:"Les chiffres, y compris leur limite", num_p:"Tout mesuré sur une instance en fonctionnement et reproductible avec les commandes de BENCHMARK.md. 50 nœuds × 100 rapports = 5 000 synchronisations par passage.",
+ num_h:"Les chiffres, y compris leur limite", num_dir:"Il s'agit de l'économie sur la réponse — les octets renvoyés par le serveur. Les appareils continuent d'envoyer leurs rapports, sauf en synchronisation conditionnelle : un rapport inchangé n'est alors pas envoyé du tout, une courte somme de contrôle circule à sa place, et l'économie côté envoi atteint 39,9 % à 5 % de changement. Si chaque appareil a sa propre SIM, votre chiffre est 39,9 %, pas 94,3 %.",
+ num_p:"Tout mesuré sur une instance en fonctionnement et reproductible avec les commandes de BENCHMARK.md. 50 nœuds × 100 rapports = 5 000 synchronisations par passage.",
  th1:"Taux de changement", th2:"Sans IzgoN", th3:"Avec IzgoN", th4:"Économisé",
  num_note_b:"Lisez la dernière ligne.", num_note:"Quand presque chaque rapport diffère du précédent, l'économie tombe à 35,3 % et la raison même de faire tourner cela disparaît en grande partie. C'est la limite honnête de l'outil, et c'est pourquoi elle figure ici plutôt que cachée.",
  own_h:"Ne croyez pas mon chiffre — mesurez le vôtre", own_p:"Exportez quelques milliers de rapports réels de vos appareils (tableau JSON ou JSON Lines) et lancez :",
@@ -933,6 +965,9 @@ ja:{
  nav_calc:"計算ツール",
  ca_h:"あなたの数字で、いくら節約できるか",
  ca_p:"実際の端末レポートを 1 件貼り付け、数値を入力してください。計算はブラウザ内で行われ、当方には何も送信されません。",
+ ca_l0:"通信料を払うのはどこか",
+ ca_m1:"端末ごとにSIM（送信料は端末が払う）",
+ ca_m2:"ゲートウェイ上のIzgoN。課金されるのはバックエンドへの回線",
  ca_l1:"端末数",
  ca_l2:"1 端末あたりの 1 日のレポート数（5 分ごと = 288）",
  ca_l3:"端末が実際に送信している形式のレポート 1 件（JSON）",
@@ -948,7 +983,7 @@ ja:{
  ca_yes:"ライセンスは {d} 日で元が取れます。それ以降はすべて節約です。",
  ca_no:"この数値では採算が取れません。購入はお勧めしません。IzgoN が効くのは、レポートが頻繁で、かつ内容がほとんど変わらない場合だけです。",
  ca_bad:"JSON が正しくありません。波かっこを含めてレポート全体を貼り付けてください。",
- ca_note:"サーバーが実際に適用するのと同じ規則による概算です。変化がなければ何も送らず、変化があれば変わった項目だけが送られ、状態全体を超えることはありません。信頼できる数値は、ご自身のレポートのエクスポートに対してベンチマークを実行してください。コマンドは BENCHMARK.md にあります。",
+ ca_note:"サーバーが実際に使う規則と同じ計算です。端末ごとにSIMの場合、節約は変化のない報告をそもそも送らないこと（代わりに短いチェックサムが飛ぶ）から生まれます。ゲートウェイの場合はバックエンドへ返す応答が節約対象です。経路が違えば数字も違います。もう一点正直に言うと、通信事業者はパケットあたり50〜54バイトのヘッダーを双方向で課金するので、「何も送らない」はペイロードがゼロという意味であり、請求がゼロという意味ではありません。信頼できる数字が欲しければ、自分の報告をエクスポートしてベンチマークを実行してください。コマンドはBENCHMARK.mdにあります。",
 
  nav_faq:"よくある質問",
  nav_team:"作者",
@@ -959,6 +994,9 @@ ja:{
  how_th1:"応答",
  how_th2:"内容",
  how_th3:"クライアントの処理",
+ how_r4b:"なし — サーバーが完全な状態を要求している",
+ how_r4c:"今度は状態を載せて呼び出し直す",
+ how_cond:"条件付き同期：前回から何も変わっていなければ、端末は報告の代わりに前回の応答に含まれていた短いチェックサムを送り返します。報告全体ではなく 47 バイトです。両者が食い違えば応答は SEND_STATE となり、端末が状態を送ります。この空振りは同期としても無料枠としてもカウントされません。端末ごとにSIMを持つ構成で節約になるのは、この部分だけです。",
  how_r1b:"なし、0 バイト",
  how_r1c:"何もしない — 双方すでに一致",
  how_r2b:"変わったキーだけ",
@@ -1001,7 +1039,7 @@ ja:{
  dl_win:"Windows 版をダウンロード", dl_src:"GitHub のソース", dl_demo:"ライブデモ",
  cta_sub:"10,000 回の同期まで無料。アカウント不要、カード不要。自分のサーバーで動きます。",
  flow_a:"機器の状態                変化あり", flow_b:"差分のみ", flow_c:"0 バイト",
- s1:"変化率 5 % での削減", s2:"70 % では割に合わなくなる",
+ s1:"応答の削減（変化率 5 %）", s2:"70 % では割に合わなくなる",
  s3:"無料の同期回数", s4:"買い切り、サブスクなし",
  what_h:"これは何か",
  what_p1:"IzgoN はサーバーであり、デスクトップアプリではありません。機器とバックエンドの間に入ります。各機器が現在の状態を送ると、IzgoN はその機器について最後に見た状態と比較し、次の 3 つのいずれかを返します。NO_CHANGE（0 バイト）、最小の差分、あるいは差分の方が大きくなる場合は状態そのもの。",
@@ -1022,7 +1060,8 @@ ja:{
  inst2_h:"2. コマンド 1 行", inst2_p:"イメージは公開済み。クローンもビルドも不要です。Redis なしでも単体で動作し、その場合は状態をメモリに保持してその旨を表示します。再起動後も残る構成にするには、隣で Redis を起動してください（リポジトリの docker-compose.yml）。",
  inst3_h:"3. Redis と一緒（推奨）", inst3_p:"再起動してもノードごとの状態が残る構成です。",
  inst_after:"ダッシュボードは http://localhost:8000 です。",
- num_h:"数値と、その限界", num_p:"すべて稼働中のインスタンスで実測し、BENCHMARK.md のコマンドで再現できます。50 ノード × 100 報告 = 1 回あたり 5,000 同期。",
+ num_h:"数値と、その限界", num_dir:"これは応答側、つまりサーバーが返すバイト数の削減です。条件付き同期を使わない限り端末は報告を送り続けます。条件付き同期では変化のない報告はまったく送られず、代わりに短いチェックサムが飛びます。変化率 5 % のとき送信側の削減は 39.9 % です。端末ごとにSIMを持つ構成なら、あなたの数字は 94.3 % ではなく 39.9 % です。",
+ num_p:"すべて稼働中のインスタンスで実測し、BENCHMARK.md のコマンドで再現できます。50 ノード × 100 報告 = 1 回あたり 5,000 同期。",
  th1:"変化率", th2:"IzgoN なし", th3:"IzgoN あり", th4:"削減",
  num_note_b:"最後の行を読んでください。", num_note:"報告のほとんどが毎回異なる場合、削減は 35.3 % まで下がり、これを動かす理由の大半は消えます。これがこのツールの正直な限界であり、だからこそ隠さずここに書いています。",
  own_h:"私の数値ではなく、あなたの数値を", own_p:"実際の報告を数千件エクスポートし（JSON 配列または JSON Lines）、実行してください。",
@@ -1049,6 +1088,9 @@ zh:{
  nav_calc:"计算器",
  ca_h:"用您自己的数字，算算能省多少",
  ca_p:"粘贴一条设备的真实上报数据并填入您的数值。计算在您的浏览器中完成，不会发送给我们。",
+ ca_l0:"流量在哪一段计费",
+ ca_m1:"每台设备各自一张 SIM 卡（上行由设备付费）",
+ ca_m2:"IzgoN 部署在网关；计费的是到后端的链路",
  ca_l1:"设备数量",
  ca_l2:"每台设备每天上报次数（每 5 分钟 = 288）",
  ca_l3:"您的一条上报数据，与设备实际发送的一致（JSON）",
@@ -1064,7 +1106,7 @@ zh:{
  ca_yes:"许可证在 {d} 天内回本，之后全是净节省。",
  ca_no:"按这些数字并不划算，建议不要购买。IzgoN 只在上报频繁且内容变化很小时才有价值。",
  ca_bad:"这不是有效的 JSON。请粘贴完整的一条上报数据，包括花括号。",
- ca_note:"按服务器实际采用的规则估算：没有变化就不发送；有变化时只发送变化的字段，且绝不超过完整状态。若需可信的数字，请用您自己上报数据的导出文件运行基准测试，命令见 BENCHMARK.md。",
+ ca_note:"按服务器真正使用的规则计算。每台设备各自一张 SIM 卡时，节省来自根本不上传未变化的报文——取而代之的是一个很短的校验值。部署在网关时，节省的是发往后端的回复。两条不同的链路，自然是两个不同的数字。还有一点要说清楚：运营商在两个方向上都会按每个数据包 50–54 字节的包头计费，所以“什么都不发送”指的是有效载荷为零，而不是账单为零。想要可信的数字，请用自己导出的报文跑一遍基准测试——命令在 BENCHMARK.md 里。",
 
  nav_faq:"常见问题",
  nav_team:"作者",
@@ -1075,6 +1117,9 @@ zh:{
  how_th1:"返回",
  how_th2:"内容",
  how_th3:"客户端如何处理",
+ how_r4b:"没有内容——服务器要求完整状态",
+ how_r4c:"重发请求，这次带上状态",
+ how_cond:"条件同步：如果自上次以来没有变化，设备就不发送报文，而是把上一次回复里的短校验值送回来——47 字节，而不是整份报文。若双方不一致，回复为 SEND_STATE，设备再发送状态。这一次空跑既不算一次同步，也不计入免费额度。当每台设备各自一张 SIM 卡时，只有这一部分能省下流量。",
  how_r1b:"无，0 字节",
  how_r1c:"什么都不做——双方已经一致",
  how_r2b:"只有变化的键",
@@ -1117,7 +1162,7 @@ zh:{
  dl_win:"下载 Windows 版", dl_src:"GitHub 源码", dl_demo:"在线演示",
  cta_sub:"10,000 次同步以内免费。无需账号，无需银行卡。运行在你自己的服务器上。",
  flow_a:"设备状态                  已变化", flow_b:"仅增量", flow_c:"零字节",
- s1:"变化率 5% 时节省", s2:"变化率 70% 时已不划算",
+ s1:"回复方向节省（变化率 5%）", s2:"变化率 70% 时已不划算",
  s3:"免费同步次数", s4:"一次性付费，无订阅",
  what_h:"这到底是什么",
  what_p1:"IzgoN 是一台服务器，不是桌面应用。它位于设备与后端之间。每台设备提交当前状态；IzgoN 将其与该设备上次的状态比较，返回三者之一：NO_CHANGE（零字节）、最小增量，或者当增量比状态本身更大时返回完整状态。",
@@ -1138,7 +1183,8 @@ zh:{
  inst2_h:"2. 一条命令", inst2_p:"镜像已发布——无需克隆，无需构建。没有 Redis 也能单独运行：此时状态保存在内存中，并会明确提示。若需重启后仍保留数据，请在旁边运行 Redis（仓库中的 docker-compose.yml）：",
  inst3_h:"3. 搭配 Redis（推荐）", inst3_p:"这样每个节点的基线状态才能在重启后保留：",
  inst_after:"仪表盘位于 http://localhost:8000。",
- num_h:"数据，以及它失效的地方", num_p:"全部在运行中的实例上实测，可用 BENCHMARK.md 中的命令复现。50 个节点 × 100 次上报 = 每轮 5,000 次同步。",
+ num_h:"数据，以及它失效的地方", num_dir:"这是回复方向的节省——服务器返回的字节数。除非使用条件同步，设备仍会照常上传报文；使用条件同步时，未变化的报文根本不会发送，取而代之的是一个很短的校验值，变化率 5% 时上行方向节省 39.9%。如果每台设备各自一张 SIM 卡，你的数字是 39.9%，而不是 94.3%。",
+ num_p:"全部在运行中的实例上实测，可用 BENCHMARK.md 中的命令复现。50 个节点 × 100 次上报 = 每轮 5,000 次同步。",
  th1:"变化率", th2:"不用 IzgoN", th3:"使用 IzgoN", th4:"节省",
  num_note_b:"请读最后一行。", num_note:"当几乎每次上报都与上一次不同时，节省降到 35.3%，运行它的大部分理由也就消失了。这是这个工具诚实的边界，所以写在这里，而不是藏起来。",
  own_h:"别信我的数字——测你自己的", own_p:"导出你设备几千条真实上报记录（JSON 数组或 JSON Lines），然后运行：",
@@ -1337,9 +1383,26 @@ function calc(){
   if (delta > full) delta = full;
   const sent    = (1-pNone) * delta;
 
+  // Two links, two different numbers. Getting this wrong is how a calculator
+  // ends up promising a fleet of SIM cards a saving on bytes it was never
+  // sending.
+  //
+  //   gw  — IzgoN on a gateway: the metered hop is the reply going upstream to
+  //         the backend, so the saving is the delta versus the whole state.
+  //   sim — every device on its own SIM: the metered hop is the device's own
+  //         upload. Nothing is saved there unless the report is not sent at
+  //         all, which is what conditional sync does: an unchanged report is
+  //         replaced by a 47-byte {"checksum":"…32 chars…"} body.
+  const mode    = (document.getElementById('cMode') || {}).value || 'sim';
+  const bodyNo  = full + 10;            // {"state": … }
+  const bodyTok = 47;                   // {"checksum":"<32 chars>"}
+  // Never spend more to send less - the client sends the report when the token
+  // would be bigger, exactly as izgon_client.py does.
+  const perSync = pNone * Math.min(bodyTok, bodyNo) + (1 - pNone) * bodyNo;
+
   const syncs   = dev * rep * 30;
-  const mbNo    = (syncs * full) / 1048576;
-  const mbYes   = (syncs * sent) / 1048576;
+  const mbNo    = (syncs * (mode === 'sim' ? bodyNo : full)) / 1048576;
+  const mbYes   = (syncs * (mode === 'sim' ? perSync : sent)) / 1048576;
   const mbSaved = mbNo - mbYes;
   const pct     = mbNo > 0 ? (mbSaved/mbNo)*100 : 0;
   const perMo   = mbSaved * price;
@@ -1365,9 +1428,12 @@ function calc(){
   }
   out.innerHTML = html;
 }
-['cDev','cRep','cJson','cChg','cPrice','cCur','cLic'].forEach(function(id){
+['cDev','cRep','cJson','cChg','cPrice','cCur','cLic','cMode'].forEach(function(id){
   const el = document.getElementById(id);
-  if (el) el.addEventListener('input', calc);
+  // 'change' as well as 'input': a <select> fires both in current browsers but
+  // only 'change' in older ones, and a picker that silently does nothing is
+  // worse than no picker.
+  if (el) { el.addEventListener('input', calc); el.addEventListener('change', calc); }
 });
 
 try{calc();}catch(e){}

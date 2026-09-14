@@ -42,6 +42,25 @@ def _hash(payload: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# Length of the token that goes on the wire. The full SHA-256 is 64 characters,
+# and a device echoing it back on a conditional sync pays for every one of them
+# on its own SIM - against a 200-byte report that is most of the saving spent on
+# the receipt. 128 bits is far beyond what this needs: the only consequence of a
+# collision is one missed update on one node, and the states being compared are
+# consecutive reports from the same device, not attacker-chosen inputs.
+#
+# The full digest is still what the engine compares internally. Only the token
+# handed to clients is shortened.
+_TOKEN_CHARS = 32
+
+
+def _token(payload: Optional[dict]) -> Optional[str]:
+    """The opaque handle a client echoes back to say 'nothing changed'."""
+    if payload is None:
+        return None
+    return _hash(payload)[:_TOKEN_CHARS]
+
+
 def compute_delta(old_state: Optional[dict], new_state: dict) -> dict:
     """Return the minimal delta needed to bring old_state to new_state.
 
@@ -104,7 +123,7 @@ class DeltaSyncEngine:
             return {
                 "node_id": node_id,
                 "status": "NO_CHANGE",
-                "checksum": new_hash,
+                "checksum": new_hash[:_TOKEN_CHARS],
                 "delta": None,
                 "bytes_full": len(full_bytes),
                 "bytes_sent": 0,
@@ -123,7 +142,7 @@ class DeltaSyncEngine:
             return {
                 "node_id": node_id,
                 "status": "FULL_STATE",
-                "checksum": new_hash,
+                "checksum": new_hash[:_TOKEN_CHARS],
                 "delta": new_state,
                 "bytes_full": len(full_bytes),
                 "bytes_sent": len(full_bytes),
@@ -132,7 +151,7 @@ class DeltaSyncEngine:
         return {
             "node_id": node_id,
             "status": "SYNC_REQUIRED",
-            "checksum": new_hash,
+            "checksum": new_hash[:_TOKEN_CHARS],
             "delta": delta,
             "bytes_full": len(full_bytes),
             "bytes_sent": len(delta_bytes),
@@ -305,12 +324,19 @@ def flush_all_state() -> None:
 DB_PATH = os.environ.get("DATAPULSE_DB_PATH", "datapulse_events.db")
 
 _SCHEMA = """
+-- bytes_full / bytes_sent measure the REPLY: what the server would have had to
+-- send back versus what it did. uplink_full / uplink_sent measure the REQUEST
+-- the same way, which is the half a device pays for on its own SIM. Rows
+-- written before v1.4.0 carry 0 in both uplink columns and are excluded from
+-- the uplink figures rather than counted as a saving nobody measured.
 CREATE TABLE IF NOT EXISTS sync_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
     status TEXT NOT NULL,
     bytes_full INTEGER NOT NULL,
     bytes_sent INTEGER NOT NULL,
+    uplink_full INTEGER NOT NULL DEFAULT 0,
+    uplink_sent INTEGER NOT NULL DEFAULT 0,
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sync_events_node ON sync_events (node_id);
@@ -342,12 +368,28 @@ def _conn():
         conn.close()
 
 
+def _migrate(conn) -> None:
+    """Add columns a database created by an older version does not have.
+
+    CREATE TABLE IF NOT EXISTS leaves an existing table exactly as it was, so
+    upgrading in place over a log with real history would otherwise fail on the
+    first INSERT naming the new columns.
+    """
+    have = {row[1] for row in conn.execute("PRAGMA table_info(sync_events)")}
+    for column in ("uplink_full", "uplink_sent"):
+        if column not in have:
+            conn.execute(
+                f"ALTER TABLE sync_events ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+            )
+
+
 def init_db(db_path: Optional[str] = None) -> None:
     global DB_PATH
     if db_path:
         DB_PATH = db_path
     with _conn() as conn:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         conn.commit()
     _reset_event_count()
 
@@ -377,13 +419,16 @@ def event_count() -> int:
         return _event_count
 
 
-def log_event(node_id: str, status: str, bytes_full: int, bytes_sent: int) -> None:
+def log_event(node_id: str, status: str, bytes_full: int, bytes_sent: int,
+              uplink_full: int = 0, uplink_sent: int = 0) -> None:
     global _event_count
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO sync_events (node_id, status, bytes_full, bytes_sent, ts) "
-            "VALUES (?,?,?,?,?)",
-            (node_id, status, bytes_full, bytes_sent, time.time()),
+            "INSERT INTO sync_events "
+            "(node_id, status, bytes_full, bytes_sent, uplink_full, uplink_sent, ts) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (node_id, status, bytes_full, bytes_sent,
+             uplink_full, uplink_sent, time.time()),
         )
         conn.commit()
     with _count_lock:
@@ -400,6 +445,12 @@ def real_metrics() -> dict:
         nodes = conn.execute(
             "SELECT COUNT(DISTINCT node_id) FROM sync_events"
         ).fetchone()[0]
+        # Only rows that actually measured the request. Rows from before v1.4.0
+        # have 0 there; averaging them in would invent a saving.
+        up_rows, up_full, up_sent = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(uplink_full),0), COALESCE(SUM(uplink_sent),0) "
+            "FROM sync_events WHERE uplink_full > 0"
+        ).fetchone()
 
     if not total_events:
         return {
@@ -409,11 +460,29 @@ def real_metrics() -> dict:
             "bytes_full_if_naive": 0,
             "bytes_actually_sent": 0,
             "bandwidth_saved_pct": None,
+            "uplink_bytes_if_naive": 0,
+            "uplink_bytes_actually_sent": 0,
+            "uplink_saved_pct": None,
+            "both_ways_saved_pct": None,
             "note": "No sync events logged yet - this is real, not a placeholder. "
                     "Run traffic through POST /api/nodes/{id}/sync to generate metrics.",
         }
 
     saved_pct = round((1 - (total_sent / total_full)) * 100, 2) if total_full else 0.0
+    up_pct = round((1 - (up_sent / up_full)) * 100, 2) if up_full else None
+    # The only figure a per-device metered SIM cares about: both directions of
+    # the same transaction, over the events where both were measured.
+    both = None
+    if up_rows and up_full:
+        with _conn() as conn:
+            d_full, d_sent = conn.execute(
+                "SELECT COALESCE(SUM(bytes_full),0), COALESCE(SUM(bytes_sent),0) "
+                "FROM sync_events WHERE uplink_full > 0"
+            ).fetchone()
+        denom = up_full + d_full
+        if denom:
+            both = round((1 - ((up_sent + d_sent) / denom)) * 100, 2)
+
     return {
         "total_sync_events": total_events,
         "active_nodes": nodes,
@@ -421,6 +490,11 @@ def real_metrics() -> dict:
         "bytes_full_if_naive": total_full,
         "bytes_actually_sent": total_sent,
         "bandwidth_saved_pct": saved_pct,
+        "uplink_events_measured": up_rows,
+        "uplink_bytes_if_naive": up_full,
+        "uplink_bytes_actually_sent": up_sent,
+        "uplink_saved_pct": up_pct,
+        "both_ways_saved_pct": both,
     }
 
 # ============================== licensing.py ==============================
@@ -519,7 +593,7 @@ def validate_license(key: Optional[str], public_key_b64: Optional[str] = None) -
 
 
 # ============================== inline static assets ==============================
-INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <link rel="manifest" href="/manifest.json">\n    <link rel="icon" href="/icon-192.png">\n    <link rel="apple-touch-icon" href="/icon-192.png">\n    <meta name="theme-color" content="#05060b">\n    <link rel="preconnect" href="https://fonts.googleapis.com">\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">\n    <style>\n        :root {\n            --bg: #05060b;\n            --card-bg: rgba(18, 22, 38, 0.55);\n            --card-border: rgba(120, 170, 255, 0.18);\n            --cyan: #37e6ff;\n            --violet: #a78bfa;\n            --magenta: #ff5fd8;\n            --green: #34ffb0;\n            --amber: #ffb454;\n            --text-main: #eef4ff;\n            --text-muted: #8fa0c4;\n        }\n        * { box-sizing: border-box; margin: 0; padding: 0; }\n        html, body { height: 100%; }\n        body {\n            background: var(--bg);\n            color: var(--text-main);\n            font-family: \'Space Mono\', ui-monospace, monospace;\n            overflow-x: hidden;\n            position: relative;\n            min-height: 100vh;\n            padding: 28px 20px 60px;\n        }\n\n        /* ---- animated holographic orb backdrop, same spirit as the\n           pulsing gradient orb shown during voice mode ---- */\n        .orb-field {\n            position: fixed;\n            inset: 0;\n            z-index: -2;\n            overflow: hidden;\n            pointer-events: none;\n        }\n        .orb {\n            position: absolute;\n            width: 60vmax;\n            height: 60vmax;\n            border-radius: 50%;\n            filter: blur(80px);\n            opacity: 0.45;\n            mix-blend-mode: screen;\n            animation: drift 22s ease-in-out infinite alternate;\n        }\n        .orb.a { background: radial-gradient(circle, var(--cyan), transparent 65%); top: -20%; left: -15%; animation-duration: 26s; }\n        .orb.b { background: radial-gradient(circle, var(--violet), transparent 65%); bottom: -25%; right: -10%; animation-duration: 30s; animation-delay: -6s; }\n        .orb.c { background: radial-gradient(circle, var(--magenta), transparent 65%); top: 30%; right: 20%; animation-duration: 20s; animation-delay: -12s; opacity: 0.3; }\n        @keyframes drift {\n            0%   { transform: translate(0, 0) scale(1) rotate(0deg); }\n            50%  { transform: translate(6%, -4%) scale(1.12) rotate(8deg); }\n            100% { transform: translate(-5%, 5%) scale(0.95) rotate(-6deg); }\n        }\n        .grid-overlay {\n            position: fixed;\n            inset: 0;\n            z-index: -1;\n            background-image:\n                linear-gradient(rgba(120,170,255,0.05) 1px, transparent 1px),\n                linear-gradient(90deg, rgba(120,170,255,0.05) 1px, transparent 1px);\n            background-size: 42px 42px;\n            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);\n            pointer-events: none;\n        }\n\n        header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }\n        .logo-area h1 {\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 900;\n            font-size: 30px;\n            letter-spacing: 2px;\n            background: linear-gradient(100deg, var(--cyan), var(--violet) 45%, var(--magenta) 90%);\n            -webkit-background-clip: text;\n            background-clip: text;\n            color: transparent;\n            background-size: 200% auto;\n            animation: shimmer 6s linear infinite;\n            text-shadow: 0 0 40px rgba(55, 230, 255, 0.25);\n        }\n        @keyframes shimmer { to { background-position: 200% center; } }\n        .logo-area p { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; max-width: 420px; line-height: 1.5; }\n\n        .system-status {\n            display: flex; align-items: center; gap: 10px;\n            padding: 9px 18px; border-radius: 30px; font-size: 11px; font-weight: 700;\n            letter-spacing: 1px;\n            backdrop-filter: blur(10px);\n            border: 1px solid var(--card-border);\n        }\n        .system-status.live { background: rgba(52, 255, 176, 0.08); border-color: var(--green); color: var(--green); box-shadow: 0 0 24px rgba(52,255,176,0.25); }\n        .system-status.no-data { background: rgba(143, 160, 196, 0.08); border-color: var(--text-muted); color: var(--text-muted); }\n        .system-status.down { background: rgba(255, 95, 95, 0.08); border-color: #ff5f5f; color: #ff5f5f; }\n        .pulse-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; animation: pulse 1.6s ease-in-out infinite; }\n        @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }\n\n        .buy-btn {\n            display: inline-flex; align-items: center; gap: 8px;\n            padding: 12px 26px;\n            border-radius: 14px;\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 700;\n            font-size: 13px;\n            letter-spacing: 1px;\n            text-decoration: none;\n            color: #05060b;\n            background: linear-gradient(100deg, var(--cyan), var(--violet), var(--magenta));\n            background-size: 200% auto;\n            box-shadow: 0 0 30px rgba(167, 139, 250, 0.45);\n            transition: transform 0.2s ease, box-shadow 0.2s ease;\n            animation: shimmer 5s linear infinite;\n        }\n        .buy-btn:active { transform: scale(0.97); }\n        .buy-note { font-size: 10.5px; color: var(--text-muted); margin-top: 8px; max-width: 280px; }\n\n        .note-box {\n            background: rgba(255, 180, 84, 0.06);\n            border: 1px solid var(--amber);\n            color: var(--amber);\n            padding: 14px 18px;\n            border-radius: 12px;\n            font-size: 12.5px;\n            margin-bottom: 25px;\n            backdrop-filter: blur(10px);\n        }\n\n        .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; margin-bottom: 26px; }\n        .metric-card {\n            position: relative;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 16px;\n            padding: 22px;\n            backdrop-filter: blur(16px);\n            overflow: hidden;\n        }\n        .metric-card::before {\n            content: \'\';\n            position: absolute; inset: -1px;\n            border-radius: 16px;\n            padding: 1px;\n            background: conic-gradient(from var(--angle, 0deg), var(--cyan), var(--violet), var(--magenta), var(--cyan));\n            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);\n            -webkit-mask-composite: xor;\n            mask-composite: exclude;\n            opacity: 0.55;\n            animation: spin 6s linear infinite;\n        }\n        @keyframes spin { to { --angle: 360deg; } }\n        @property --angle { syntax: \'<angle>\'; initial-value: 0deg; inherits: false; }\n        .metric-title { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }\n        .metric-value { font-family: \'Orbitron\', sans-serif; font-size: 30px; font-weight: 700; margin-top: 10px; color: #fff; text-shadow: 0 0 20px rgba(55,230,255,0.2); }\n        .metric-sub { font-size: 10.5px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }\n\n        table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(16px); }\n        th, td { text-align: left; padding: 13px 16px; font-size: 12px; border-bottom: 1px solid var(--card-border); }\n        th { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }\n        td { color: var(--text-main); }\n        .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 28px 0 12px; }\n\n        details.about {\n            margin-top: 30px;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 14px;\n            padding: 16px 20px;\n            backdrop-filter: blur(16px);\n            font-size: 12.5px;\n            line-height: 1.6;\n            color: var(--text-muted);\n        }\n        details.about summary { cursor: pointer; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; }\n        details.about ul { margin: 10px 0 0 18px; }\n\n        footer { margin-top: 30px; font-size: 10.5px; color: var(--text-muted); text-align: center; opacity: 0.7; }\n    </style>\n</head>\n<body>\n    <div class="orb-field">\n        <div class="orb a"></div>\n        <div class="orb b"></div>\n        <div class="orb c"></div>\n    </div>\n    <div class="grid-overlay"></div>\n\n    <header>\n        <div class="logo-area">\n            <h1>IzgoN</h1>\n            <p>Delta-sync engine &mdash; source-available, self-hosted. Every figure below is read live from /api/metrics.</p>\n        </div>\n        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">\n            <div id="statusPill" class="system-status no-data">\n                <div class="pulse-dot"></div>\n                <span id="statusText">CHECKING&hellip;</span>\n            </div>\n            <a class="buy-btn" href="__PURCHASE_URL__" target="_blank" rel="noopener noreferrer">Buy a licence &mdash; $29</a>\n        </div>\n    </header>\n\n    <div id="storageNote" class="note-box" style="display:none;">Running without Redis &mdash; node state is being kept in memory and is lost when this process stops. Fine for a first look; start Redis beside it (docker-compose.yml in the repo) for a setup that survives restarts.</div>\n    <div id="noDataNote" class="note-box" style="display:none;">\n        This instance has had no traffic yet, so the counters below read zero. Measured results at three change rates are published in BENCHMARK.md &mdash; 94.3% saved at a 5% change rate, and 35.3% at 70%, where most of the reason to run this disappears. These numbers are real, not placeholders &mdash; they will populate once traffic\n        goes through <code>POST /api/nodes/{id}/sync</code>. Run <code>python benchmark.py</code> to generate a real sample.\n    </div>\n\n    <div class="grid-metrics">\n        <div class="metric-card">\n            <div class="metric-title">Bandwidth Saved</div>\n            <div class="metric-value" id="mSaved">&mdash;</div>\n            <div class="metric-sub">vs. sending full state every time</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Sync Events Logged</div>\n            <div class="metric-value" id="mEvents">&mdash;</div>\n            <div class="metric-sub" id="mNoChange">&mdash;</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Active Nodes</div>\n            <div class="metric-value" id="mNodes">&mdash;</div>\n            <div class="metric-sub">distinct node_id values seen</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Bytes: Naive vs. Actual</div>\n            <div class="metric-value" id="mBytes">&mdash;</div>\n            <div class="metric-sub">total bytes, measured</div>\n        </div>\n    </div>\n\n    <div class="section-title">Known Nodes (requires API key &mdash; open with ?key= to load)</div>\n    <table>\n        <thead><tr><th>Node ID</th><th>Last known state</th></tr></thead>\n        <tbody id="nodesBody"><tr><td colspan="2" style="color:var(--text-muted)">Set API key via ?key= query param to load.</td></tr></tbody>\n    </table>\n\n    <details class="about">\n        <summary>O projektu / What is IzgoN?</summary>\n        <p style="margin-top:8px;">IzgoN sends only what changed instead of the full state every sync &mdash; a hash-based delta-sync engine you self-host, built for fleets that report state often over metered links &mdash; IoT and sensor devices on cellular SIMs, edge agents on constrained connections, monitoring agents polling every few seconds &mdash; where most fields stay identical between reports.</p>\n        <ul>\n            <li>Real FastAPI backend, Redis-backed state, SQLite event log &mdash; nothing here is simulated.</li>\n            <li>Offline license verification &mdash; no phone-home server required after purchase.</li>\n            <li>Source-available licence &mdash; read, run and modify it yourself. Free up to 10,000 syncs; a one-time licence beyond that. Not open source: see LICENSE.md.</li>\n        </ul>\n    </details>\n\n    <footer>IzgoN &mdash; source-available delta-sync utility. See LICENSE.md.</footer>\n\n    <script>\n        const params = new URLSearchParams(window.location.search);\n        const apiKey = params.get(\'key\') || \'\';\n        // Keep the key out of the address bar. A key left in the URL ends up in\n        // browser history, in any proxy log on the way, and in the Referer header\n        // of every outbound request from this page. Read it once, then scrub it.\n        if (apiKey) {\n            try { history.replaceState(null, \'\', window.location.pathname); } catch (e) {}\n        }\n\n        async function refreshMetrics() {\n            try {\n                const res = await fetch(\'/api/metrics\');\n                const m = await res.json();\n                const pill = document.getElementById(\'statusPill\');\n                const text = document.getElementById(\'statusText\');\n                const note = document.getElementById(\'noDataNote\');\n                const sNote = document.getElementById(\'storageNote\');\n                if (sNote) sNote.style.display = (m.storage && m.storage !== \'redis\') ? \'block\' : \'none\';\n\n                if (m.total_sync_events === 0) {\n                    pill.className = \'system-status no-data\';\n                    text.textContent = \'NO DATA YET\';\n                    note.style.display = \'block\';\n                    document.getElementById(\'mSaved\').textContent = \'—\';\n                    document.getElementById(\'mEvents\').textContent = \'0\';\n                    document.getElementById(\'mNoChange\').textContent = \'no NO_CHANGE events yet\';\n                    document.getElementById(\'mNodes\').textContent = \'0\';\n                    document.getElementById(\'mBytes\').textContent = \'—\';\n                    return;\n                }\n\n                pill.className = \'system-status live\';\n                text.textContent = \'LIVE — REAL DATA\';\n                note.style.display = \'none\';\n                document.getElementById(\'mSaved\').textContent = m.bandwidth_saved_pct + \'%\';\n                document.getElementById(\'mEvents\').textContent = m.total_sync_events;\n                document.getElementById(\'mNoChange\').textContent = m.no_change_events + \' were NO_CHANGE (0 bytes)\';\n                document.getElementById(\'mNodes\').textContent = m.active_nodes;\n                document.getElementById(\'mBytes\').textContent =\n                    m.bytes_actually_sent + \' / \' + m.bytes_full_if_naive + \' B\';\n            } catch (e) {\n                const pill = document.getElementById(\'statusPill\');\n                pill.className = \'system-status down\';\n                document.getElementById(\'statusText\').textContent = \'API UNREACHABLE\';\n            }\n        }\n\n        async function refreshNodes() {\n            if (!apiKey) return;\n            try {\n                const res = await fetch(\'/api/nodes\', { headers: { \'X-API-Key\': apiKey } });\n                if (!res.ok) throw new Error(\'unauthorized\');\n                const data = await res.json();\n                const body = document.getElementById(\'nodesBody\');\n                body.innerHTML = \'\';\n                if (data.nodes.length === 0) {\n                    body.innerHTML = \'<tr><td colspan="2" style="color:var(--text-muted)">No nodes yet.</td></tr>\';\n                }\n                for (const n of data.nodes) {\n                    const tr = document.createElement(\'tr\');\n                    tr.innerHTML = `<td>${n.node_id}</td><td><code>${JSON.stringify(n.state)}</code></td>`;\n                    body.appendChild(tr);\n                }\n            } catch (e) {\n                document.getElementById(\'nodesBody\').innerHTML =\n                    \'<tr><td colspan="2" style="color:var(--text-muted)">Invalid/missing API key.</td></tr>\';\n            }\n        }\n\n        refreshMetrics();\n        refreshNodes();\n        setInterval(refreshMetrics, 3000);\n        setInterval(refreshNodes, 5000);\n\n        if (\'serviceWorker\' in navigator) {\n            window.addEventListener(\'load\', () => {\n                navigator.serviceWorker.register(\'/sw.js\').catch(() => {});\n            });\n        }\n    </script>\n</body>\n</html>\n'
+INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <link rel="manifest" href="/manifest.json">\n    <link rel="icon" href="/icon-192.png">\n    <link rel="apple-touch-icon" href="/icon-192.png">\n    <meta name="theme-color" content="#05060b">\n    <link rel="preconnect" href="https://fonts.googleapis.com">\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">\n    <style>\n        :root {\n            --bg: #05060b;\n            --card-bg: rgba(18, 22, 38, 0.55);\n            --card-border: rgba(120, 170, 255, 0.18);\n            --cyan: #37e6ff;\n            --violet: #a78bfa;\n            --magenta: #ff5fd8;\n            --green: #34ffb0;\n            --amber: #ffb454;\n            --text-main: #eef4ff;\n            --text-muted: #8fa0c4;\n        }\n        * { box-sizing: border-box; margin: 0; padding: 0; }\n        html, body { height: 100%; }\n        body {\n            background: var(--bg);\n            color: var(--text-main);\n            font-family: \'Space Mono\', ui-monospace, monospace;\n            overflow-x: hidden;\n            position: relative;\n            min-height: 100vh;\n            padding: 28px 20px 60px;\n        }\n\n        /* ---- animated holographic orb backdrop, same spirit as the\n           pulsing gradient orb shown during voice mode ---- */\n        .orb-field {\n            position: fixed;\n            inset: 0;\n            z-index: -2;\n            overflow: hidden;\n            pointer-events: none;\n        }\n        .orb {\n            position: absolute;\n            width: 60vmax;\n            height: 60vmax;\n            border-radius: 50%;\n            filter: blur(80px);\n            opacity: 0.45;\n            mix-blend-mode: screen;\n            animation: drift 22s ease-in-out infinite alternate;\n        }\n        .orb.a { background: radial-gradient(circle, var(--cyan), transparent 65%); top: -20%; left: -15%; animation-duration: 26s; }\n        .orb.b { background: radial-gradient(circle, var(--violet), transparent 65%); bottom: -25%; right: -10%; animation-duration: 30s; animation-delay: -6s; }\n        .orb.c { background: radial-gradient(circle, var(--magenta), transparent 65%); top: 30%; right: 20%; animation-duration: 20s; animation-delay: -12s; opacity: 0.3; }\n        @keyframes drift {\n            0%   { transform: translate(0, 0) scale(1) rotate(0deg); }\n            50%  { transform: translate(6%, -4%) scale(1.12) rotate(8deg); }\n            100% { transform: translate(-5%, 5%) scale(0.95) rotate(-6deg); }\n        }\n        .grid-overlay {\n            position: fixed;\n            inset: 0;\n            z-index: -1;\n            background-image:\n                linear-gradient(rgba(120,170,255,0.05) 1px, transparent 1px),\n                linear-gradient(90deg, rgba(120,170,255,0.05) 1px, transparent 1px);\n            background-size: 42px 42px;\n            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);\n            pointer-events: none;\n        }\n\n        header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }\n        .logo-area h1 {\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 900;\n            font-size: 30px;\n            letter-spacing: 2px;\n            background: linear-gradient(100deg, var(--cyan), var(--violet) 45%, var(--magenta) 90%);\n            -webkit-background-clip: text;\n            background-clip: text;\n            color: transparent;\n            background-size: 200% auto;\n            animation: shimmer 6s linear infinite;\n            text-shadow: 0 0 40px rgba(55, 230, 255, 0.25);\n        }\n        @keyframes shimmer { to { background-position: 200% center; } }\n        .logo-area p { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; max-width: 420px; line-height: 1.5; }\n\n        .system-status {\n            display: flex; align-items: center; gap: 10px;\n            padding: 9px 18px; border-radius: 30px; font-size: 11px; font-weight: 700;\n            letter-spacing: 1px;\n            backdrop-filter: blur(10px);\n            border: 1px solid var(--card-border);\n        }\n        .system-status.live { background: rgba(52, 255, 176, 0.08); border-color: var(--green); color: var(--green); box-shadow: 0 0 24px rgba(52,255,176,0.25); }\n        .system-status.no-data { background: rgba(143, 160, 196, 0.08); border-color: var(--text-muted); color: var(--text-muted); }\n        .system-status.down { background: rgba(255, 95, 95, 0.08); border-color: #ff5f5f; color: #ff5f5f; }\n        .pulse-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; animation: pulse 1.6s ease-in-out infinite; }\n        @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }\n\n        .buy-btn {\n            display: inline-flex; align-items: center; gap: 8px;\n            padding: 12px 26px;\n            border-radius: 14px;\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 700;\n            font-size: 13px;\n            letter-spacing: 1px;\n            text-decoration: none;\n            color: #05060b;\n            background: linear-gradient(100deg, var(--cyan), var(--violet), var(--magenta));\n            background-size: 200% auto;\n            box-shadow: 0 0 30px rgba(167, 139, 250, 0.45);\n            transition: transform 0.2s ease, box-shadow 0.2s ease;\n            animation: shimmer 5s linear infinite;\n        }\n        .buy-btn:active { transform: scale(0.97); }\n        .buy-note { font-size: 10.5px; color: var(--text-muted); margin-top: 8px; max-width: 280px; }\n\n        .note-box {\n            background: rgba(255, 180, 84, 0.06);\n            border: 1px solid var(--amber);\n            color: var(--amber);\n            padding: 14px 18px;\n            border-radius: 12px;\n            font-size: 12.5px;\n            margin-bottom: 25px;\n            backdrop-filter: blur(10px);\n        }\n\n        .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; margin-bottom: 26px; }\n        .metric-card {\n            position: relative;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 16px;\n            padding: 22px;\n            backdrop-filter: blur(16px);\n            overflow: hidden;\n        }\n        .metric-card::before {\n            content: \'\';\n            position: absolute; inset: -1px;\n            border-radius: 16px;\n            padding: 1px;\n            background: conic-gradient(from var(--angle, 0deg), var(--cyan), var(--violet), var(--magenta), var(--cyan));\n            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);\n            -webkit-mask-composite: xor;\n            mask-composite: exclude;\n            opacity: 0.55;\n            animation: spin 6s linear infinite;\n        }\n        @keyframes spin { to { --angle: 360deg; } }\n        @property --angle { syntax: \'<angle>\'; initial-value: 0deg; inherits: false; }\n        .metric-title { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }\n        .metric-value { font-family: \'Orbitron\', sans-serif; font-size: 30px; font-weight: 700; margin-top: 10px; color: #fff; text-shadow: 0 0 20px rgba(55,230,255,0.2); }\n        .metric-sub { font-size: 10.5px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }\n\n        table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(16px); }\n        th, td { text-align: left; padding: 13px 16px; font-size: 12px; border-bottom: 1px solid var(--card-border); }\n        th { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }\n        td { color: var(--text-main); }\n        .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 28px 0 12px; }\n\n        details.about {\n            margin-top: 30px;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 14px;\n            padding: 16px 20px;\n            backdrop-filter: blur(16px);\n            font-size: 12.5px;\n            line-height: 1.6;\n            color: var(--text-muted);\n        }\n        details.about summary { cursor: pointer; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; }\n        details.about ul { margin: 10px 0 0 18px; }\n\n        footer { margin-top: 30px; font-size: 10.5px; color: var(--text-muted); text-align: center; opacity: 0.7; }\n    </style>\n</head>\n<body>\n    <div class="orb-field">\n        <div class="orb a"></div>\n        <div class="orb b"></div>\n        <div class="orb c"></div>\n    </div>\n    <div class="grid-overlay"></div>\n\n    <header>\n        <div class="logo-area">\n            <h1>IzgoN</h1>\n            <p>Delta-sync engine &mdash; source-available, self-hosted. Every figure below is read live from /api/metrics.</p>\n        </div>\n        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">\n            <div id="statusPill" class="system-status no-data">\n                <div class="pulse-dot"></div>\n                <span id="statusText">CHECKING&hellip;</span>\n            </div>\n            <a class="buy-btn" href="__PURCHASE_URL__" target="_blank" rel="noopener noreferrer">Buy a licence &mdash; $29</a>\n        </div>\n    </header>\n\n    <div id="storageNote" class="note-box" style="display:none;">Running without Redis &mdash; node state is being kept in memory and is lost when this process stops. Fine for a first look; start Redis beside it (docker-compose.yml in the repo) for a setup that survives restarts.</div>\n    <div id="noDataNote" class="note-box" style="display:none;">\n        This instance has had no traffic yet, so the counters below read zero. Measured results at three change rates are published in BENCHMARK.md &mdash; 94.3% saved at a 5% change rate, and 35.3% at 70%, where most of the reason to run this disappears. These numbers are real, not placeholders &mdash; they will populate once traffic\n        goes through <code>POST /api/nodes/{id}/sync</code>. Run <code>python benchmark.py</code> to generate a real sample.\n    </div>\n\n    <div class="grid-metrics">\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; server reply</div>\n            <div class="metric-value" id="mSaved">&mdash;</div>\n            <div class="metric-sub">vs. returning the full state every time</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; device report</div>\n            <div class="metric-value" id="mUp">&mdash;</div>\n            <div class="metric-sub" id="mUpSub">needs conditional sync &mdash; devices sending a checksum instead of the state</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Sync Events Logged</div>\n            <div class="metric-value" id="mEvents">&mdash;</div>\n            <div class="metric-sub" id="mNoChange">&mdash;</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Active Nodes</div>\n            <div class="metric-value" id="mNodes">&mdash;</div>\n            <div class="metric-sub">distinct node_id values seen</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Bytes: Naive vs. Actual</div>\n            <div class="metric-value" id="mBytes">&mdash;</div>\n            <div class="metric-sub">total bytes, measured</div>\n        </div>\n    </div>\n\n    <div class="section-title">Known Nodes (requires API key &mdash; open with ?key= to load)</div>\n    <table>\n        <thead><tr><th>Node ID</th><th>Last known state</th></tr></thead>\n        <tbody id="nodesBody"><tr><td colspan="2" style="color:var(--text-muted)">Set API key via ?key= query param to load.</td></tr></tbody>\n    </table>\n\n    <details class="about">\n        <summary>O projektu / What is IzgoN?</summary>\n        <p style="margin-top:8px;">IzgoN sends only what changed instead of the full state every sync &mdash; a hash-based delta-sync engine you self-host, built for fleets that report state often over metered links &mdash; IoT and sensor devices on cellular SIMs, edge agents on constrained connections, monitoring agents polling every few seconds &mdash; where most fields stay identical between reports.</p>\n        <ul>\n            <li>Real FastAPI backend, Redis-backed state, SQLite event log &mdash; nothing here is simulated.</li>\n            <li>Offline license verification &mdash; no phone-home server required after purchase.</li>\n            <li>Source-available licence &mdash; read, run and modify it yourself. Free up to 10,000 syncs; a one-time licence beyond that. Not open source: see LICENSE.md.</li>\n        </ul>\n    </details>\n\n    <footer>IzgoN &mdash; source-available delta-sync utility. See LICENSE.md.</footer>\n\n    <script>\n        const params = new URLSearchParams(window.location.search);\n        const apiKey = params.get(\'key\') || \'\';\n        // Keep the key out of the address bar. A key left in the URL ends up in\n        // browser history, in any proxy log on the way, and in the Referer header\n        // of every outbound request from this page. Read it once, then scrub it.\n        if (apiKey) {\n            try { history.replaceState(null, \'\', window.location.pathname); } catch (e) {}\n        }\n\n        async function refreshMetrics() {\n            try {\n                const res = await fetch(\'/api/metrics\');\n                const m = await res.json();\n                const pill = document.getElementById(\'statusPill\');\n                const text = document.getElementById(\'statusText\');\n                const note = document.getElementById(\'noDataNote\');\n                const sNote = document.getElementById(\'storageNote\');\n                if (sNote) sNote.style.display = (m.storage && m.storage !== \'redis\') ? \'block\' : \'none\';\n\n                if (m.total_sync_events === 0) {\n                    pill.className = \'system-status no-data\';\n                    text.textContent = \'NO DATA YET\';\n                    note.style.display = \'block\';\n                    document.getElementById(\'mSaved\').textContent = \'—\';\n                    document.getElementById(\'mUp\').textContent = \'—\';\n                    document.getElementById(\'mEvents\').textContent = \'0\';\n                    document.getElementById(\'mNoChange\').textContent = \'no NO_CHANGE events yet\';\n                    document.getElementById(\'mNodes\').textContent = \'0\';\n                    document.getElementById(\'mBytes\').textContent = \'—\';\n                    return;\n                }\n\n                pill.className = \'system-status live\';\n                text.textContent = \'LIVE — REAL DATA\';\n                note.style.display = \'none\';\n                document.getElementById(\'mSaved\').textContent = m.bandwidth_saved_pct + \'%\';\n                // Only shown when it was actually measured. A server whose\n                // clients all still upload the full state has saved nothing\n                // here, and must say so rather than borrow the reply figure.\n                if (m.uplink_saved_pct === null || m.uplink_saved_pct === undefined) {\n                    document.getElementById(\'mUp\').textContent = \'0%\';\n                    document.getElementById(\'mUpSub\').textContent = \'no device has used conditional sync yet\';\n                } else {\n                    document.getElementById(\'mUp\').textContent = m.uplink_saved_pct + \'%\';\n                    document.getElementById(\'mUpSub\').textContent = m.uplink_events_measured + \' reports measured, both ways: \' + m.both_ways_saved_pct + \'%\';\n                }\n                document.getElementById(\'mEvents\').textContent = m.total_sync_events;\n                document.getElementById(\'mNoChange\').textContent = m.no_change_events + \' were NO_CHANGE (0 bytes)\';\n                document.getElementById(\'mNodes\').textContent = m.active_nodes;\n                document.getElementById(\'mBytes\').textContent =\n                    m.bytes_actually_sent + \' / \' + m.bytes_full_if_naive + \' B\';\n            } catch (e) {\n                const pill = document.getElementById(\'statusPill\');\n                pill.className = \'system-status down\';\n                document.getElementById(\'statusText\').textContent = \'API UNREACHABLE\';\n            }\n        }\n\n        async function refreshNodes() {\n            if (!apiKey) return;\n            try {\n                const res = await fetch(\'/api/nodes\', { headers: { \'X-API-Key\': apiKey } });\n                if (!res.ok) throw new Error(\'unauthorized\');\n                const data = await res.json();\n                const body = document.getElementById(\'nodesBody\');\n                body.innerHTML = \'\';\n                if (data.nodes.length === 0) {\n                    body.innerHTML = \'<tr><td colspan="2" style="color:var(--text-muted)">No nodes yet.</td></tr>\';\n                }\n                for (const n of data.nodes) {\n                    const tr = document.createElement(\'tr\');\n                    tr.innerHTML = `<td>${n.node_id}</td><td><code>${JSON.stringify(n.state)}</code></td>`;\n                    body.appendChild(tr);\n                }\n            } catch (e) {\n                document.getElementById(\'nodesBody\').innerHTML =\n                    \'<tr><td colspan="2" style="color:var(--text-muted)">Invalid/missing API key.</td></tr>\';\n            }\n        }\n\n        refreshMetrics();\n        refreshNodes();\n        setInterval(refreshMetrics, 3000);\n        setInterval(refreshNodes, 5000);\n\n        if (\'serviceWorker\' in navigator) {\n            window.addEventListener(\'load\', () => {\n                navigator.serviceWorker.register(\'/sw.js\').catch(() => {});\n            });\n        }\n    </script>\n</body>\n</html>\n'
 MANIFEST_JSON = '{\n    "id": "/",\n    "name": "IzgoN Dashboard",\n    "short_name": "IzgoN",\n    "description": "Live dashboard for a self-hosted delta-sync service - real metrics only, no placeholders.",\n    "start_url": "/?source=pwa",\n    "scope": "/",\n    "display": "standalone",\n    "orientation": "portrait",\n    "background_color": "#05060b",\n    "theme_color": "#05060b",\n    "categories": ["utilities", "developer"],\n    "icons": [\n        { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },\n        { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },\n        { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }\n    ]\n}'
 SW_JS = '// IzgoN - service worker.\n// Caches only the static app shell so the dashboard installs and opens\n// offline. API calls (/api/*) are always fetched fresh from the network -\n// caching real metrics would risk showing stale numbers as if they were\n// live, which is exactly the kind of misleading behavior this project is\n// trying to get away from.\n//\n// The HTML shell is network-first for the same reason. It used to be\n// cache-first under a cache name that never changed, so after you upgraded\n// IzgoN every returning visitor kept seeing the old dashboard forever. The\n// cache name now carries the app version, and the shell is only served from\n// cache when the network is actually unreachable.\nconst CACHE_NAME = "izgon-shell-__APP_VERSION__";\nconst SHELL_FILES = [\n  "/",\n  "/manifest.json",\n  "/icon-192.png",\n  "/icon-512.png",\n];\n\nself.addEventListener("install", (event) => {\n  event.waitUntil(\n    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES))\n  );\n  self.skipWaiting();\n});\n\nself.addEventListener("activate", (event) => {\n  event.waitUntil(\n    caches.keys().then((keys) =>\n      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))\n    )\n  );\n  self.clients.claim();\n});\n\nself.addEventListener("fetch", (event) => {\n  const url = new URL(event.request.url);\n\n  // Never cache API responses - always real, always fresh.\n  if (url.pathname.startsWith("/api/") || url.pathname === "/healthz") {\n    return;\n  }\n\n  // The dashboard itself: network first, cache only as an offline fallback.\n  if (event.request.mode === "navigate" || url.pathname === "/") {\n    event.respondWith(\n      fetch(event.request)\n        .then((res) => {\n          const copy = res.clone();\n          caches.open(CACHE_NAME).then((c) => c.put("/", copy)).catch(() => {});\n          return res;\n        })\n        .catch(() => caches.match("/").then((c) => c || Response.error()))\n    );\n    return;\n  }\n\n  // Icons and the manifest do not change within a release.\n  event.respondWith(\n    caches.match(event.request).then((cached) => cached || fetch(event.request))\n  );\n});'
 ICON_192 = base64.b64decode('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')
@@ -638,7 +712,7 @@ async def lifespan(_app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="IzgoN", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.4.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -662,7 +736,39 @@ def _license_status() -> dict:
 
 
 class SyncRequest(BaseModel):
-    state: dict
+    # Exactly one of these two.
+    #
+    # `state` is the classic call: send everything, let the server diff it.
+    #
+    # `checksum` is the conditional call, and it is the one that matters to
+    # anyone paying per megabyte on the device's own SIM. Until now IzgoN only
+    # ever shrank the *reply*: the device still uploaded its full state every
+    # single cycle, so on a per-device metered link the saving was half the
+    # transaction at best. A device that can see its own state has not changed
+    # does not need to send it at all - it echoes back the `checksum` the server
+    # returned last time and the state never leaves the device. No hashing and
+    # no canonical-JSON spec on the client side: the token is opaque, produced
+    # by this server, and only ever compared here.
+    #
+    # If it does not match what the server holds, the answer is SEND_STATE and
+    # the device repeats the call with `state`. That round trip is not logged
+    # as a sync event and does not count against the free tier - it carried no
+    # data and charging for it would be dishonest.
+    state: Optional[dict] = None
+    checksum: Optional[str] = None
+    # Opaque token identifying the lifetime of the CALLER's copy of the state.
+    # Generate one at start-up and send the same value every call. When it
+    # changes, the server knows the caller's mirror is new and answers with the
+    # whole state instead of a delta it could not apply.
+    #
+    # Without this the failure is silent: a backend that lost its mirror keeps
+    # receiving deltas, merges them into nothing, and believes it is in sync.
+    # Sparkplug solves the same problem with a birth/death sequence number.
+    #
+    # Epochs are held in memory only, so a restart of THIS server forces one
+    # FULL_STATE per node using them. That errs towards sending too much, never
+    # too little, which is the only safe direction for this to fail in.
+    epoch: Optional[str] = None
     # What the device is doing now, in seconds. Optional: send it and the
     # server answers with next_interval; leave it out and no advice is given,
     # because the server would be inventing a number it cannot know.
@@ -715,6 +821,43 @@ def _advise_interval(node_id: str, status: str, current: Optional[float]) -> Opt
     }
 
 
+# ---------------------------- session epochs ----------------------------
+#
+# Last epoch seen per node. Memory only, on purpose: see SyncRequest.epoch.
+_epochs: dict[str, str] = {}
+_epoch_lock = threading.Lock()
+
+# Same bound as node ids - this string is caller-supplied and is kept per node.
+_EPOCH_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _epoch_is_new(node_id: str, epoch: Optional[str]) -> bool:
+    """True when the caller's copy of the state is new to us. Read only.
+
+    True for an epoch we have not seen for this node - including the first one
+    ever, and every one after this server restarts. Each of those costs one
+    extra FULL_STATE and buys back the guarantee that a delta is never applied
+    to a mirror that cannot receive it.
+
+    Deliberately does not record anything. An epoch is only remembered once a
+    sync has actually completed; recording it here would mean a conditional
+    call answered SEND_STATE marks the epoch as seen, and the very next call -
+    the one carrying the state - would then be answered with a delta the new
+    mirror cannot apply. That is the exact failure this is here to prevent.
+    """
+    if epoch is None:
+        return False
+    with _epoch_lock:
+        return _epochs.get(node_id) != epoch
+
+
+def _remember_epoch(node_id: str, epoch: Optional[str]) -> None:
+    if epoch is None:
+        return
+    with _epoch_lock:
+        _epochs[node_id] = epoch
+
+
 # Node ids become Redis keys and land in the event log. Without a bound, one
 # caller can grow memory without limit and fill the log with junk.
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -745,16 +888,35 @@ def _too_deep(obj, limit: int) -> bool:
     return False
 
 
-@app.post("/api/nodes/{node_id}/sync")
-def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
+_CHECKSUM_RE = re.compile(r"^[A-Za-z0-9]{16,128}$")
+
+
+def _check_node_id(node_id: str) -> None:
     if not _NODE_ID_RE.match(node_id):
         raise HTTPException(
             status_code=422,
+            detail="node_id must be 1-128 characters of A-Z a-z 0-9 . _ : -",
+        )
+
+
+def _check_free_tier() -> None:
+    if _license_status()["licensed"]:
+        return
+    # event_count() is O(1); real_metrics() would scan the table on every
+    # single sync and get slower as the log grows.
+    if event_count() >= FREE_TIER_SYNC_LIMIT:
+        raise HTTPException(
+            status_code=402,
             detail=(
-                "node_id must be 1-128 characters of A-Z a-z 0-9 . _ : -"
+                f"Free evaluation limit reached ({FREE_TIER_SYNC_LIMIT} sync "
+                f"events). Buy a license and set DATAPULSE_LICENSE_KEY to "
+                f"continue: {PURCHASE_URL}"
             ),
         )
-    if _too_deep(body.state, MAX_STATE_DEPTH):
+
+
+def _check_state_limits(state: dict) -> int:
+    if _too_deep(state, MAX_STATE_DEPTH):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -762,7 +924,7 @@ def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
                 "DATAPULSE_MAX_STATE_DEPTH if you really report structures that deep"
             ),
         )
-    state_bytes = len(_wire_bytes(body.state))
+    state_bytes = len(_wire_bytes(state))
     if state_bytes > MAX_STATE_BYTES:
         raise HTTPException(
             status_code=413,
@@ -771,22 +933,99 @@ def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
                 "DATAPULSE_MAX_STATE_BYTES if your reports are genuinely this large"
             ),
         )
-    if not _license_status()["licensed"]:
-        # event_count() is O(1); real_metrics() would scan the table on every
-        # single sync and get slower as the log grows.
-        if event_count() >= FREE_TIER_SYNC_LIMIT:
-            raise HTTPException(
-                status_code=402,
-                detail=(
-                    f"Free evaluation limit reached ({FREE_TIER_SYNC_LIMIT} sync "
-                    f"events). Buy a license and set DATAPULSE_LICENSE_KEY to "
-                    f"continue: {PURCHASE_URL}"
-                ),
-            )
-    old_state = get_state(node_id)
+    return state_bytes
+
+
+def _send_state(node_id: str, reason: str) -> dict:
+    """Ask for the whole state. Deliberately not logged as a sync event.
+
+    Nothing was synchronised and nothing was measured, so counting it would
+    inflate the savings figure with round trips that carried no data and would
+    burn a free-tier sync the customer got nothing for.
+    """
+    return {
+        "node_id": node_id,
+        "status": "SEND_STATE",
+        "checksum": None,
+        "delta": None,
+        "bytes_full": 0,
+        "bytes_sent": 0,
+        "reason": reason,
+    }
+
+
+@app.post("/api/nodes/{node_id}/sync")
+def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
+    _check_node_id(node_id)
+
+    if (body.state is None) == (body.checksum is None):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "send exactly one of `state` (the full report) or `checksum` "
+                "(the token from this server's last reply, when nothing has "
+                "changed on the device)"
+            ),
+        )
+    if body.epoch is not None and not _EPOCH_RE.match(body.epoch):
+        raise HTTPException(
+            status_code=422,
+            detail="epoch must be 1-128 characters of A-Z a-z 0-9 . _ : -",
+        )
+    if body.checksum is not None and not _CHECKSUM_RE.match(body.checksum):
+        raise HTTPException(
+            status_code=422,
+            detail="checksum must be the token from a previous reply of this server",
+        )
+
+    fresh_mirror = _epoch_is_new(node_id, body.epoch)
+    sent_bytes = len(_wire_bytes(body.model_dump(exclude_none=True)))
+
+    # ---- conditional call: the state never left the device ----
+    if body.checksum is not None:
+        old_state = get_state(node_id)
+        if fresh_mirror:
+            return _send_state(node_id, "epoch changed - this copy of the state is new")
+        if old_state is None:
+            return _send_state(node_id, "no baseline held for this node")
+        if _token(old_state) != body.checksum:
+            return _send_state(node_id, "checksum does not match the baseline held here")
+
+        _check_free_tier()
+        baseline_bytes = len(_wire_bytes(old_state))
+        result = {
+            "node_id": node_id,
+            "status": "NO_CHANGE",
+            "checksum": body.checksum,
+            "delta": None,
+            "bytes_full": baseline_bytes,
+            "bytes_sent": 0,
+        }
+        # What the same call would have weighed had it carried the state.
+        would_be = dict(body.model_dump(exclude_none=True))
+        would_be.pop("checksum", None)
+        would_be["state"] = old_state
+        log_event(
+            node_id, "NO_CHANGE", baseline_bytes, 0,
+            uplink_full=len(_wire_bytes(would_be)), uplink_sent=sent_bytes,
+        )
+        _remember_epoch(node_id, body.epoch)
+        savjet = _advise_interval(node_id, "NO_CHANGE", body.interval)
+        if savjet:
+            result["polling"] = savjet
+        return result
+
+    # ---- classic call: the full state is here ----
+    _check_state_limits(body.state)
+    _check_free_tier()
+    old_state = None if fresh_mirror else get_state(node_id)
     result = engine.evaluate(node_id, old_state, body.state)
     set_state(node_id, body.state)
-    log_event(node_id, result["status"], result["bytes_full"], result["bytes_sent"])
+    log_event(
+        node_id, result["status"], result["bytes_full"], result["bytes_sent"],
+        uplink_full=sent_bytes, uplink_sent=sent_bytes,
+    )
+    _remember_epoch(node_id, body.epoch)
     savjet = _advise_interval(node_id, result["status"], body.interval)
     if savjet:
         result["polling"] = savjet
@@ -796,6 +1035,9 @@ def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
 class BatchSyncRequest(BaseModel):
     # A device that was offline replays what it buffered, oldest first.
     states: list[dict]
+    # Same meaning as on a single sync: a new epoch means the caller's copy of
+    # the state is new, so the first report in the batch answers FULL_STATE.
+    epoch: Optional[str] = None
     interval: Optional[float] = None
 
 
@@ -840,15 +1082,24 @@ def sync_node_batch(node_id: str, body: BatchSyncRequest, _=Depends(_check_key))
                         f"events). Buy a license and set DATAPULSE_LICENSE_KEY to "
                         f"continue: {PURCHASE_URL}"))
 
+    if body.epoch is not None and not _EPOCH_RE.match(body.epoch):
+        raise HTTPException(status_code=422,
+                            detail="epoch must be 1-128 characters of A-Z a-z 0-9 . _ : -")
+
     results = []
-    state = get_state(node_id)
+    state = None if _epoch_is_new(node_id, body.epoch) else get_state(node_id)
     for s in body.states:
         r = engine.evaluate(node_id, state, s)
-        log_event(node_id, r["status"], r["bytes_full"], r["bytes_sent"])
+        # Batching saves round trips, not payload: every report in the queue was
+        # still uploaded, so the request side shows no saving and must not claim one.
+        up = len(_wire_bytes(s))
+        log_event(node_id, r["status"], r["bytes_full"], r["bytes_sent"],
+                  uplink_full=up, uplink_sent=up)
         results.append({"status": r["status"], "bytes_full": r["bytes_full"],
                         "bytes_sent": r["bytes_sent"]})
         state = s
     set_state(node_id, state)
+    _remember_epoch(node_id, body.epoch)
 
     sent = sum(r["bytes_sent"] for r in results)
     full = sum(r["bytes_full"] for r in results)

@@ -10,6 +10,38 @@ IzgoN sits between your fleet and your backend. Each node POSTs its current stat
    {"t":21.5,"h":60}  ──►  compare + diff  ──►  NO_CHANGE    (0 bytes)
 ```
 
+### Which direction is being saved
+
+Two links, and they do not cost the same thing.
+
+Up to v1.3.0 IzgoN shrank the **reply** and nothing else. The device still uploaded its
+whole report every cycle. That is the right shape when IzgoN runs on a gateway and the
+expensive link is the one going upstream — and it is only half the story when every
+device carries its own metered SIM, because the half the device pays for never moved.
+
+v1.4.0 adds **conditional sync**, which shrinks the report as well. A device whose
+report is identical to the one it last sent does not send the report: it echoes back the
+short token the server gave it, and the server answers `NO_CHANGE` without ever
+receiving the state.
+
+```
+   report unchanged   {"checksum":"a1b2…"}  ──►  NO_CHANGE   (report never uploaded)
+   report changed     {"state":{…}}         ──►  delta / full state as before
+   token unknown      {"checksum":"a1b2…"}  ──►  SEND_STATE  (repeat with the state)
+```
+
+Measured, same runs as BENCHMARK.md, 5 % change rate — three wiring diagrams, three
+different numbers, and picking the flattering one is how a benchmark turns into a lie:
+
+| Your setup | Saved |
+|---|---|
+| IzgoN on a gateway; the metered link runs from it to your backend | **94.3 %** (reply) |
+| Every device on its own metered SIM, reporting upstream | **39.9 %** (report) |
+| A client that polls and gets the whole state back each time | **64.9 %** (both) |
+
+A reporting device was never receiving the full state back, so it has nothing to save in
+that direction — the per-SIM number is 39.9 %, not 64.9 %.
+
 ![IzgoN dashboard — bytes avoided, counted live from real traffic](izgon-dashboard.png)
 
 Live demo: <https://izgon-api.onrender.com> — two caveats before you click, because
@@ -38,12 +70,27 @@ The diff is ~50 lines. The other four things are the product.
 
 You will get value from IzgoN if you have **many nodes reporting frequently, where most of the state doesn't change between reports**:
 
-- IoT or sensor fleets on metered cellular / satellite SIMs
+- IoT or sensor fleets on metered cellular / satellite SIMs — **use conditional sync**,
+  and expect the report figure (39.9 % at a 5 % change rate), not the reply figure
+- A gateway aggregating many devices over a cheap local link, with one metered uplink to
+  the backend — this is where the reply figure (94.3 %) is the whole story
 - Field agents or edge devices on constrained links
 - Dashboards or monitoring agents polling every few seconds
 - Game or simulation servers syncing entity state
 
-You will **not** get value if your payloads are small, infrequent, or change completely every time. Run the benchmark below against your own data before you pay for anything — `--payload-file` takes an export of your real reports, so it is one command, not a code change.
+You will **not** get value if your payloads are small, infrequent, or change completely
+every time. Two more honest limits worth knowing before you spend anything:
+
+- **A cellular bill is not payload.** Each packet carries 50–54 bytes of
+  Ethernet/IP/UDP/GTP header, billed in both directions, and most operators round each
+  session up to a minimum billing unit. `NO_CHANGE` is 0 bytes of *payload*; it is not
+  0 bytes on the invoice. Fewer and smaller packets still cost less — just not by the
+  percentage a payload-only measurement suggests.
+- **If your platform already suppresses unchanged values, this is not new to you.**
+  Home Assistant, for one, does it already.
+
+Run the benchmark against your own data before you pay for anything — `--payload-file`
+takes an export of your real reports, so it is one command, not a code change.
 
 ---
 
@@ -159,10 +206,10 @@ the number is small for your data, don't.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/api/nodes/{id}/sync` | API key | Submit node state, get `NO_CHANGE` or delta |
+| `POST` | `/api/nodes/{id}/sync` | API key | Submit `state` — or just `checksum` when nothing changed — and get `NO_CHANGE`, a delta, the full state, or `SEND_STATE` |
 | `POST` | `/api/nodes/{id}/sync/batch` | API key | Replay a buffered queue, oldest first, in one request |
 | `GET` | `/api/nodes` | API key | List known nodes and their baselines (paged, `?limit=` up to 5000) |
-| `GET` | `/api/metrics` | — | Live totals: bytes full, bytes sent, savings |
+| `GET` | `/api/metrics` | — | Live totals for both directions: `bandwidth_saved_pct` (reply), `uplink_saved_pct` (report), `both_ways_saved_pct` |
 | `GET` | `/api/license` | — | Current tier and remaining free syncs |
 | `GET` | `/healthz` | — | Redis reachability, storage mode, alert status |
 | `GET` | `/` | — | Dashboard |
@@ -184,13 +231,14 @@ the number is small for your data, don't.
 rejected with `422`: node ids become Redis keys and log rows, so an unbounded id
 is an unbounded memory cost.
 
-`status` is one of three values, and a client must handle all three:
+`status` is one of four values, and a client must handle all four:
 
 | `status` | `delta` holds | What the client does |
 |---|---|---|
 | `NO_CHANGE` | `null`, `bytes_sent` is `0` | nothing — both sides already agree |
 | `SYNC_REQUIRED` | only the changed keys | **merge** it into the known state |
 | `FULL_STATE` | the complete new state | **replace** the known state with it |
+| `SEND_STATE` | `null` | repeat the call carrying `state` |
 
 `FULL_STATE` exists because a delta is not always smaller. Drop enough keys at once
 and the deletion markers outweigh what is left — `{"a":1}` is 7 bytes, while the
@@ -200,9 +248,54 @@ therefore never exceed `bytes_full`, and a measured saving can never come out
 negative. A client that only knows the first two statuses should treat an unknown
 one as "resync from scratch", which is exactly right.
 
-`checksum` is a SHA-256 of the stored state, so a client can confirm both sides agree
-without transferring anything. `bytes_full` and `bytes_sent` are both compact JSON —
-one ruler on both sides, so the difference between them is a real number.
+`checksum` is an opaque 32-character token for the stored state. Two uses: confirm both
+sides agree without transferring anything, and — the reason it is short — hand it back
+on the next call when nothing has changed, so the report itself never goes on the wire.
+`bytes_full` and `bytes_sent` are both compact JSON — one ruler on both sides, so the
+difference between them is a real number.
+
+### Conditional sync — not sending the report at all
+
+Send `checksum` instead of `state` and the request carries about 72 bytes rather than
+the whole report:
+
+```jsonc
+// nothing changed since the last call
+{ "checksum": "e163cdfd20a3617d2fe560a3dd849c2f", "epoch": "boot-7a41" }
+```
+
+* matches what the server holds → `NO_CHANGE`, and the report was never uploaded
+* does not match, or the server has no baseline → `SEND_STATE`, and the client repeats
+  the call with `state`
+
+A `SEND_STATE` round trip is **not** logged as a sync event and does **not** count
+against the free tier. Nothing was synchronised and nothing was measured; charging for
+it would be dishonest.
+
+The token is opaque — produced here, compared only here. There is no canonical-JSON
+spec for your client to reproduce and get subtly wrong in another language. Store the
+last one you were given, and send it back when your own report is unchanged.
+
+Do not send it when your report is smaller than the token would be. The reference
+client measures both and sends whichever is smaller, for the same reason the engine
+picks `FULL_STATE` over an oversized delta: spending more bytes to "save" bytes is not
+a saving.
+
+### `epoch` — so a lost mirror never receives a delta
+
+Optional, and the failure it prevents is silent. A backend that lost its copy of the
+state keeps receiving deltas, merges them into nothing, and believes it is in sync.
+
+Generate a token at start-up, send the same value on every call. When the server sees a
+value it has not seen for that node, it answers with the whole state instead of a delta:
+
+```jsonc
+{ "state": { "temp": 22.1 }, "epoch": "boot-7a41" }
+```
+
+Epochs are held in memory, so restarting **IzgoN** also forces one `FULL_STATE` per node
+using them. That errs towards sending too much, which is the only safe direction for
+this to fail in. Omit the field and behaviour is exactly as it was before v1.4.0.
 
 Nested objects are diffed recursively. **Lists are compared as a whole, not element
 by element** — if one item in a list changes, the whole list is sent. This is a
@@ -210,19 +303,24 @@ deliberate limitation; see [Limitations](#limitations).
 
 ### Applying what comes back
 
-`izgon_client.py` in the repo is a ~60-line, stdlib-only reference client. It is not
-an SDK — it is the smallest correct implementation of the three statuses, short
-enough to read in one sitting and copy into whatever language you actually use:
+`izgon_client.py` in the repo is a stdlib-only reference client. It is not an SDK — it
+is the smallest correct implementation of the four statuses, short enough to read in one
+sitting and copy into whatever language you actually use:
 
 ```python
 from izgon_client import IzgonClient
 
 c = IzgonClient("http://localhost:8000", "dev-local-key")
-mirror = {}
 for report in my_reports:
-    mirror = c.sync("sensor-01", report, mirror)
-    # mirror now equals report, having transferred only what changed
+    mirror = c.sync("sensor-01", report)
+    # mirror now equals report, having transferred only what changed —
+    # and on an unchanged report, having sent no report at all
 ```
+
+It keeps the epoch, the last report it sent and the last token per node, uses the
+conditional call when that is genuinely smaller, recovers from `SEND_STATE` inside the
+same `sync()` call, and raises on a status it does not recognise rather than guessing.
+Pass `conditional=False` to get the pre-v1.4.0 behaviour of always sending the state.
 
 The merge rule it implements: nested objects merge recursively, and
 `{"__deleted__": true}` removes a key. Verified by replaying 720 randomised

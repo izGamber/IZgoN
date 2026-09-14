@@ -42,17 +42,63 @@ error count), roughly 155 bytes of JSON. Between reports, each field independent
 - **With IzgoN** — bytes actually returned: `0` for an unchanged state, the minimal
   delta when that is smaller, and the whole state when a delta would be bigger.
 
+Two directions, and they are not the same number. Read this before the table.
+
+- **Reply** — what the server sends back. Every version of IzgoN has measured this.
+- **Report** — what the device sends up. Until v1.4.0 IzgoN did nothing to this at all:
+  the device uploaded its full state on every cycle no matter what came back. If your
+  devices each sit on their own metered SIM, that half was never free, and quoting the
+  reply figure alone overstated what the bill would do. Conditional sync (v1.4.0) is
+  what shrinks it, and the **both ways** column is the only figure that answers
+  "what happens to a per-device SIM bill".
+
 Both sides are measured as compact JSON. One ruler on both sides is the only way the
 difference between them means anything; before v1.1.0 it was two rulers, and the
 figures below are correspondingly higher than the ones this file used to carry.
 
 ## Results
 
+### Reply — bytes the server sends back
+
 | Change rate | Unchanged reports | Sent whole | Without IzgoN | With IzgoN | Saved |
 |---|---|---|---|---|---|
 | 5 % | 3,093 / 5,000 | 50 | 759.2 KB | 43.0 KB | **94.3 %** |
 | 20 % | 671 / 5,000 | 50 | 758.2 KB | 147.5 KB | **80.5 %** |
 | 70 % | 0 / 5,000 | 104 | 758.4 KB | 490.4 KB | **35.3 %** |
+
+### Report — bytes the device sends up, with conditional sync (v1.4.0)
+
+Same runs, `--conditional`. A device whose report is byte-identical to the one it last
+sent replies with the server's 32-character token instead of the report itself.
+
+| Change rate | Reports never uploaded | Without IzgoN | With IzgoN | Report saved | **Both ways** |
+|---|---|---|---|---|---|
+| 5 % | 3,093 / 5,000 | 895.9 KB | 538.1 KB | 39.9 % | **64.9 %** |
+| 20 % | 671 / 5,000 | 895.0 KB | 817.4 KB | 8.7 % | **41.6 %** |
+| 70 % | 0 / 5,000 | 895.1 KB | 895.1 KB | 0.0 % | **16.2 %** |
+
+The report side saves less than the count of unchanged reports suggests, and that is
+arithmetic, not modesty: the token still has to travel. 72 bytes of `{"checksum":…}`
+against roughly 180 bytes of report is a 60 % cut on those calls, not a 100 % one. When
+the report is smaller than the token would be, the reference client sends the report —
+paying more to "save" bytes is not a saving.
+
+### Which column is yours
+
+These are three different numbers for three different wiring diagrams, and picking the
+flattering one is how a benchmark turns into a lie.
+
+| Your setup | Your number | Why |
+|---|---|---|
+| IzgoN on a gateway; the metered link runs from it to your backend | **94.3 %** | the reply is what crosses the expensive link |
+| Every device on its own metered SIM, reporting upstream | **39.9 %** | only the report crosses it; use conditional sync |
+| A client that polls and gets the whole state back each time | **64.9 %** | both directions carry the full state today |
+
+The "both ways" column compares against a baseline where the full state travels in
+**both** directions every cycle. That is a real shape — a monitoring agent or an app
+polling for current state — but it is not the per-device SIM case. A reporting device
+was never receiving the full state back, so it has nothing to save there. **Quote
+39.9 % to a per-SIM fleet, not 64.9 %.**
 
 "Sent whole" is a sync where IzgoN sent the complete state rather than a delta. At 5 %
 and 20 % those 50 are simply the first report from each of the 50 nodes — there is
@@ -96,6 +142,11 @@ docker compose up -d
 python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.05 --seed 42
 python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.20 --seed 42
 python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.70 --seed 42
+
+# and the same three with the request side measured too
+python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.05 --seed 42 --conditional
+python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.20 --seed 42 --conditional
+python3 benchmark.py --nodes 50 --rounds 100 --change-rate 0.70 --seed 42 --conditional
 ```
 
 Redis was flushed between runs so each started with no baselines:
