@@ -202,26 +202,41 @@ def _key(node_id: str) -> str:
     return f"{_PREFIX}{node_id}"
 
 
+def _memory_get(node_id: str) -> Optional[str]:
+    raw = _memory_state.get(_key(node_id))
+    if raw is None:
+        raw = _sqlite_get_state(node_id)
+        if raw is not None:
+            _memory_state[_key(node_id)] = raw
+    return raw
+
+
 def get_state(node_id: str) -> Optional[dict]:
     raw = _redis_or_memory(
         lambda: _client.get(_key(node_id)),
-        lambda: _memory_state.get(_key(node_id)),
+        lambda: _memory_get(node_id),
     )
     return json.loads(raw) if raw else None
+
+
+def _memory_set(node_id: str, blob: str) -> None:
+    _memory_state[_key(node_id)] = blob
+    _sqlite_put_state(node_id, blob)
 
 
 def set_state(node_id: str, state: dict) -> None:
     blob = json.dumps(state)
     _redis_or_memory(
         lambda: _client.set(_key(node_id), blob),
-        lambda: _memory_state.__setitem__(_key(node_id), blob),
+        lambda: _memory_set(node_id, blob),
     )
 
 
 def list_node_ids() -> list[str]:
     keys = _redis_or_memory(
         lambda: list(_client.scan_iter(match=f"{_PREFIX}*")),
-        lambda: list(_memory_state.keys()),
+        lambda: list({*_memory_state.keys(),
+                      *(_key(n) for n in _sqlite_node_ids())}),
     )
     return [k[len(_PREFIX):] for k in keys]
 
@@ -233,12 +248,57 @@ def ping() -> bool:
         return False
 
 
+def _sqlite_put_state(node_id: str, blob: str) -> None:
+    """Write the baseline through to SQLite while Redis is unreachable.
+
+    The memory fallback added in 1.1.2 kept the server answering, but a restart
+    still made every node resync in full. Nothing is lost when that happens -
+    it is just paid for, in exactly the bytes this product exists to save."""
+    try:
+        with _conn() as conn:
+            conn.execute(
+                "INSERT INTO node_states (node_id, state, ts) VALUES (?,?,?) "
+                "ON CONFLICT(node_id) DO UPDATE SET state=excluded.state, ts=excluded.ts",
+                (node_id, blob, time.time()),
+            )
+            conn.commit()
+    except sqlite3.Error:
+        pass  # the sync itself must not fail because the spare copy did
+
+
+def _sqlite_get_state(node_id: str) -> Optional[str]:
+    try:
+        with _conn() as conn:
+            row = conn.execute(
+                "SELECT state FROM node_states WHERE node_id = ?", (node_id,)
+            ).fetchone()
+        return row[0] if row else None
+    except sqlite3.Error:
+        return None
+
+
+def _sqlite_node_ids() -> list[str]:
+    try:
+        with _conn() as conn:
+            return [r[0] for r in conn.execute("SELECT node_id FROM node_states")]
+    except sqlite3.Error:
+        return []
+
+
 def flush_all_state() -> None:
     """Test/dev helper only - clears all node state."""
     def _redis_flush():
         for k in _client.scan_iter(match=f"{_PREFIX}*"):
             _client.delete(k)
-    _redis_or_memory(_redis_flush, _memory_state.clear)
+    def _memory_flush():
+        _memory_state.clear()
+        try:
+            with _conn() as conn:
+                conn.execute("DELETE FROM node_states")
+                conn.commit()
+        except sqlite3.Error:
+            pass
+    _redis_or_memory(_redis_flush, _memory_flush)
 
 # ============================== metrics_db.py ==============================
 
@@ -255,6 +315,15 @@ CREATE TABLE IF NOT EXISTS sync_events (
 );
 CREATE INDEX IF NOT EXISTS idx_sync_events_node ON sync_events (node_id);
 CREATE INDEX IF NOT EXISTS idx_sync_events_ts ON sync_events (ts);
+
+-- Baselines, so a restart without Redis does not make every node resync in
+-- full. Redis stays the primary store; this is what the memory fallback
+-- writes through to, and reads from when the process starts cold.
+CREATE TABLE IF NOT EXISTS node_states (
+    node_id TEXT PRIMARY KEY,
+    state   TEXT NOT NULL,
+    ts      REAL NOT NULL
+);
 """
 
 
@@ -469,13 +538,107 @@ PURCHASE_URL = os.environ.get(
 ALLOWED_ORIGINS = os.environ.get("DATAPULSE_ALLOWED_ORIGINS", "*").split(",")
 
 
+# ---------------------------- silence alerting ----------------------------
+#
+# The second thing a fleet operator asks for after the data itself is "tell me
+# when a device stops reporting". Off unless DATAPULSE_ALERT_URL is set.
+#
+# Three things it deliberately does NOT do, because each of them is how this
+# kind of watchdog turns into noise nobody reads:
+#   * it does not alert per loop, only on the transition into silence and back;
+#   * it does not alert for nodes it has never seen report;
+#   * it does not fire a storm for the window the server itself was down - the
+#     first pass after start only records who is already silent.
+ALERT_URL = os.environ.get("DATAPULSE_ALERT_URL", "")
+ALERT_AFTER = float(os.environ.get("DATAPULSE_ALERT_AFTER", "300"))
+ALERT_EVERY = float(os.environ.get("DATAPULSE_ALERT_EVERY", "30"))
+
+_silent: set[str] = set()
+_alert_primed = False
+_alerts_sent = 0
+
+
+def last_seen() -> dict[str, float]:
+    try:
+        with _conn() as conn:
+            return {r[0]: r[1] for r in conn.execute(
+                "SELECT node_id, MAX(ts) FROM sync_events GROUP BY node_id")}
+    except sqlite3.Error:
+        return {}
+
+
+def _post_alert(payload: dict) -> None:
+    global _alerts_sent
+    import urllib.request
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        ALERT_URL, data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "IzgoN"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+        _alerts_sent += 1
+    except Exception as exc:  # a dead webhook must not take the server with it
+        print(f"[izgon] alert POST failed: {exc.__class__.__name__}: {exc}", flush=True)
+
+
+def check_silence(now: Optional[float] = None) -> list[dict]:
+    """One pass. Returns the alerts it decided to send, so it can be tested
+    without a webhook and without waiting."""
+    global _alert_primed
+    now = time.time() if now is None else now
+    seen = last_seen()
+    out = []
+    quiet_now = {n for n, ts in seen.items() if now - ts > ALERT_AFTER}
+
+    if not _alert_primed:
+        # First pass after start: record the state, announce nothing.
+        _silent.clear()
+        _silent.update(quiet_now)
+        _alert_primed = True
+        return []
+
+    for n in sorted(quiet_now - _silent):
+        out.append({"event": "silent", "node_id": n,
+                        "silent_for_seconds": round(now - seen[n], 1),
+                        "threshold_seconds": ALERT_AFTER})
+    for n in sorted(_silent - quiet_now):
+        if n in seen:
+            out.append({"event": "recovered", "node_id": n,
+                            "last_seen_seconds_ago": round(now - seen[n], 1)})
+    _silent.clear()
+    _silent.update(quiet_now)
+    return out
+
+
+async def _alert_loop():
+    import asyncio
+    while True:
+        try:
+            for a in check_silence():
+                if ALERT_URL:
+                    _post_alert(a)
+        except Exception as exc:
+            print(f"[izgon] alert loop error: {exc.__class__.__name__}: {exc}", flush=True)
+        await asyncio.sleep(ALERT_EVERY)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import asyncio
     init_db()
+    task = None
+    if ALERT_URL:
+        print(f"[izgon] silence alerts on: POST to {ALERT_URL} when a node goes "
+              f"quiet for more than {ALERT_AFTER:.0f}s", flush=True)
+        task = asyncio.create_task(_alert_loop())
     yield
+    if task:
+        task.cancel()
 
 
-app = FastAPI(title="IzgoN", version="1.2.2", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -500,6 +663,56 @@ def _license_status() -> dict:
 
 class SyncRequest(BaseModel):
     state: dict
+    # What the device is doing now, in seconds. Optional: send it and the
+    # server answers with next_interval; leave it out and no advice is given,
+    # because the server would be inventing a number it cannot know.
+    interval: Optional[float] = None
+
+
+# ---------------------------- adaptive interval ----------------------------
+#
+# After N identical reports in a row, tell the device it may report less often.
+# One value changes and it goes straight back to its normal rate.
+#
+# Two honest limits, because this trades freshness for battery and bytes:
+#   * the advice is advisory. The device's own firmware decides whether to obey,
+#     and most deployed fleets will not. Nothing here changes unless the client
+#     acts on it.
+#   * backing off means a change can be reported up to next_interval late. That
+#     is the whole cost, so the ceiling is a knob, not a constant, and the reply
+#     carries max_staleness so nobody has to work it out.
+ADAPTIVE = os.environ.get("DATAPULSE_ADAPTIVE", "1") != "0"
+QUIET_AFTER = int(os.environ.get("DATAPULSE_QUIET_AFTER", "3"))
+MAX_INTERVAL = float(os.environ.get("DATAPULSE_MAX_INTERVAL", "300"))
+INTERVAL_FACTOR = float(os.environ.get("DATAPULSE_INTERVAL_FACTOR", "2"))
+
+_quiet_runs: dict[str, int] = {}
+_quiet_lock = threading.Lock()
+
+
+def _advise_interval(node_id: str, status: str, current: Optional[float]) -> Optional[dict]:
+    if not ADAPTIVE:
+        return None
+    with _quiet_lock:
+        if status == "NO_CHANGE":
+            n = _quiet_runs.get(node_id, 0) + 1
+            _quiet_runs[node_id] = n
+        else:
+            n = 0
+            _quiet_runs.pop(node_id, None)
+    if current is None or current <= 0:
+        return None
+    if status != "NO_CHANGE":
+        return {"next_interval": current, "reason": "changed", "max_staleness": current}
+    if n < QUIET_AFTER:
+        return {"next_interval": current, "reason": "settling", "max_staleness": current}
+    steps = n - QUIET_AFTER + 1
+    proposed = min(MAX_INTERVAL, current * (INTERVAL_FACTOR ** steps))
+    return {
+        "next_interval": round(proposed, 3),
+        "reason": f"{n} identical reports in a row",
+        "max_staleness": round(proposed, 3),
+    }
 
 
 # Node ids become Redis keys and land in the event log. Without a bound, one
@@ -574,7 +787,85 @@ def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
     result = engine.evaluate(node_id, old_state, body.state)
     set_state(node_id, body.state)
     log_event(node_id, result["status"], result["bytes_full"], result["bytes_sent"])
+    savjet = _advise_interval(node_id, result["status"], body.interval)
+    if savjet:
+        result["polling"] = savjet
     return result
+
+
+class BatchSyncRequest(BaseModel):
+    # A device that was offline replays what it buffered, oldest first.
+    states: list[dict]
+    interval: Optional[float] = None
+
+
+MAX_BATCH = int(os.environ.get("DATAPULSE_MAX_BATCH", "500"))
+
+
+@app.post("/api/nodes/{node_id}/sync/batch")
+def sync_node_batch(node_id: str, body: BatchSyncRequest, _=Depends(_check_key)) -> dict:
+    """Replay a buffer in one request.
+
+    A device on a solar site or a truck in a tunnel comes back with a queue.
+    Sending it one request at a time is a round trip per report over the link
+    that was just unreliable. This takes the queue in one POST and answers once.
+
+    Each report is still evaluated against the one before it, so the byte
+    accounting is what it would have been had they arrived live - it does not
+    flatter the numbers by comparing only the first and last."""
+    if not _NODE_ID_RE.match(node_id):
+        raise HTTPException(status_code=422,
+                            detail="node_id must be 1-128 characters of A-Z a-z 0-9 . _ : -")
+    if not body.states:
+        raise HTTPException(status_code=422, detail="states is empty")
+    if len(body.states) > MAX_BATCH:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{len(body.states)} reports in one batch, limit is {MAX_BATCH}; "
+                   "raise DATAPULSE_MAX_BATCH or send fewer per request")
+
+    for s in body.states:
+        if _too_deep(s, MAX_STATE_DEPTH):
+            raise HTTPException(status_code=422,
+                                detail=f"a state is nested deeper than {MAX_STATE_DEPTH} levels")
+        if len(_wire_bytes(s)) > MAX_STATE_BYTES:
+            raise HTTPException(status_code=413,
+                                detail=f"a state exceeds {MAX_STATE_BYTES} bytes")
+
+    if not _license_status()["licensed"]:
+        if event_count() + len(body.states) > FREE_TIER_SYNC_LIMIT:
+            raise HTTPException(
+                status_code=402,
+                detail=(f"Free evaluation limit reached ({FREE_TIER_SYNC_LIMIT} sync "
+                        f"events). Buy a license and set DATAPULSE_LICENSE_KEY to "
+                        f"continue: {PURCHASE_URL}"))
+
+    results = []
+    state = get_state(node_id)
+    for s in body.states:
+        r = engine.evaluate(node_id, state, s)
+        log_event(node_id, r["status"], r["bytes_full"], r["bytes_sent"])
+        results.append({"status": r["status"], "bytes_full": r["bytes_full"],
+                        "bytes_sent": r["bytes_sent"]})
+        state = s
+    set_state(node_id, state)
+
+    sent = sum(r["bytes_sent"] for r in results)
+    full = sum(r["bytes_full"] for r in results)
+    last = results[-1]
+    out = {
+        "node_id": node_id,
+        "accepted": len(results),
+        "results": results,
+        "bytes_full": full,
+        "bytes_sent": sent,
+        "saved_pct": round(100 * (1 - sent / full), 2) if full else 0.0,
+        "checksum": _hash(state),
+    }
+    advice = _advise_interval(node_id, last["status"], body.interval)
+    if advice:
+        out["polling"] = advice
+    return out
 
 
 @app.get("/api/license")
@@ -616,7 +907,15 @@ def healthz() -> dict:
         mode = "memory (Redis unreachable)"
     else:
         mode = "unavailable (Redis unreachable, fallback disabled)"
-    return {"redis_reachable": reachable, "storage": mode}
+    out = {"redis_reachable": reachable, "storage": mode}
+    if ALERT_URL:
+        out["alerts"] = {
+            "enabled": True,
+            "silent_after_seconds": ALERT_AFTER,
+            "currently_silent": sorted(_silent),
+            "sent": _alerts_sent,
+        }
+    return out
 
 
 @app.get("/", response_class=HTMLResponse)

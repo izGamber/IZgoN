@@ -1,5 +1,75 @@
 # Changelog
 
+## 1.3.0 — 2026-09-14
+
+Four additions, each one a thing a fleet operator asked for before a feature
+list did. Nothing here changes an existing client: every new field is additive
+and every new knob is off or advisory by default.
+
+### Added
+
+- **Silence alerting.** A background pass compares each node's last sync
+  against `DATAPULSE_ALERT_AFTER` and POSTs to `DATAPULSE_ALERT_URL` when one
+  goes quiet, and again when it comes back. Off unless that URL is set.
+
+  It deliberately does not alert per loop, only on the transition in and out of
+  silence; it never alerts for a node it has not seen report; and the first pass
+  after start only records who is already quiet, so restarting the server does
+  not fire a storm about the window the server itself was down. `/healthz`
+  reports which nodes are currently silent and how many alerts have been sent.
+
+- **Adaptive reporting interval.** Send your current interval as `interval` in
+  the sync body and the reply carries `polling.next_interval` — the same value
+  while anything is changing, and a backed-off one after
+  `DATAPULSE_QUIET_AFTER` identical reports in a row, doubling to a ceiling of
+  `DATAPULSE_MAX_INTERVAL`. One changed field puts it straight back.
+
+  Two things said plainly, because this trades freshness for battery and bytes.
+  It is **advice**: the device's firmware decides whether to obey, and a fleet
+  already in the field will not until it is reflashed. And backing off means a
+  change can be reported up to that interval late, which is why the reply also
+  carries `max_staleness` rather than leaving anyone to work it out. Omit
+  `interval` and no advice is given at all — the server will not invent a
+  number it cannot know.
+
+- **Batch sync, for devices that were offline.** `POST
+  /api/nodes/{id}/sync/batch` takes `{"states": [...]}` oldest first and answers
+  once. A truck coming out of a tunnel flushes its queue in one request instead
+  of one round trip per report over the link that just failed.
+
+  Each report is still evaluated against the one before it, so the byte
+  accounting is what it would have been had they arrived live. Collapsing the
+  queue to first-versus-last would have made the saving look better and the
+  number meaningless.
+
+- **Baselines survive a restart without Redis.** 1.1.2 kept the server
+  answering when Redis was unreachable by holding state in memory; a restart
+  then made every node resync in full. State now also writes through to SQLite
+  in that mode and is read back on a cold start. Redis is still the primary
+  store and nothing changes when it is up.
+
+### Site
+
+- **A sandbox on the page.** Paste two consecutive reports from one of your own
+  devices and see exactly what the server would answer — status, delta, and the
+  byte counts. It runs in the browser: no API key in the page, no load on the
+  demo, and it works while the free demo instance is asleep.
+
+  The browser implementation is checked against the server's own engine on 200
+  randomised state pairs — nested objects, lists, nulls, disappearing keys and
+  non-ASCII text — and must agree on status, delta and both byte counts. That
+  check caught a real bug before this shipped: the page was writing a deleted
+  field as `"__deleted__"` where the server writes `{"__deleted__": true}`, 7
+  bytes lighter per removed field. It would have quietly understated the
+  product to anyone who compared the two.
+
+### Verified
+
+30 checks on the server covering all four additions plus the existing
+protocol, auth, node-id validation, licensing and metrics. The benchmark
+reproduces 94.2 % at a 5 % change rate, unchanged from 1.2.2.
+
+
 ## 1.2.2 — 2026-09-12
 
 ### Fixed

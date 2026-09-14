@@ -160,10 +160,11 @@ the number is small for your data, don't.
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `POST` | `/api/nodes/{id}/sync` | API key | Submit node state, get `NO_CHANGE` or delta |
+| `POST` | `/api/nodes/{id}/sync/batch` | API key | Replay a buffered queue, oldest first, in one request |
 | `GET` | `/api/nodes` | API key | List known nodes and their baselines (paged, `?limit=` up to 5000) |
 | `GET` | `/api/metrics` | — | Live totals: bytes full, bytes sent, savings |
 | `GET` | `/api/license` | — | Current tier and remaining free syncs |
-| `GET` | `/healthz` | — | Redis reachability |
+| `GET` | `/healthz` | — | Redis reachability, storage mode, alert status |
 | `GET` | `/` | — | Dashboard |
 
 ### Response shape
@@ -231,6 +232,75 @@ byte-identical to what was sent.
 
 ---
 
+## Telling a device to report less often
+
+Send your current interval with the state and the reply carries a suggestion:
+
+```bash
+curl -X POST $IZGON/api/nodes/truck-042/sync \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"interval": 5, "state": {"lat": 43.8563, "fuel": 62}}'
+```
+
+```json
+{
+  "status": "NO_CHANGE",
+  "bytes_sent": 0,
+  "polling": { "next_interval": 40, "reason": "6 identical reports in a row", "max_staleness": 40 }
+}
+```
+
+Two things worth being clear about before you build on it:
+
+**It is advice, not a command.** The server has no way to make a device do
+anything. Your firmware reads `next_interval` and decides. A fleet already in
+the field will keep its old rate until it is reflashed, and reflashing a
+deployed fleet is the most expensive thing in this business — so treat this as
+something to design into the next firmware, not as a saving you already have.
+
+**Backing off costs freshness.** At `next_interval: 40`, a change that happens
+one second after a report is heard about 39 seconds late. That is the whole
+trade, so the reply states it as `max_staleness` instead of leaving you to
+work it out. If a device must never be that stale, leave `interval` out of the
+body and no suggestion is made, or set `DATAPULSE_ADAPTIVE=0` server-wide.
+
+## When a device stops reporting
+
+Set a webhook and IzgoN tells you when a node goes quiet, and again when it
+comes back:
+
+```bash
+DATAPULSE_ALERT_URL=https://hooks.example.com/izgon
+DATAPULSE_ALERT_AFTER=600
+```
+
+```json
+{ "event": "silent", "node_id": "truck-042", "silent_for_seconds": 640.2, "threshold_seconds": 600 }
+```
+
+One alert per transition, never per check. Nodes that have never reported are
+never alerted about. And the first pass after the server starts only records
+who is already quiet — restarting IzgoN does not fire a burst of alerts about
+the window IzgoN itself was down.
+
+## Devices that were offline
+
+A device that buffered while it had no signal can flush the queue in one
+request instead of one round trip per report:
+
+```bash
+curl -X POST $IZGON/api/nodes/truck-042/sync/batch \
+  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"states": [{"fuel": 50}, {"fuel": 50}, {"fuel": 49}]}'
+```
+
+Each report is compared with the one before it, so the byte totals are what
+they would have been had the reports arrived live. Collapsing the queue to
+first-versus-last would make the saving look better and mean nothing.
+
+The buffer itself belongs in your device code, not here — IzgoN does not ship a
+client, and a queue that has to survive a power cut is the device's job.
+
 ## Configuration
 
 All settings are environment variables. Copy `.env.example` to `.env` and edit.
@@ -247,6 +317,14 @@ All settings are environment variables. Copy `.env.example` to `.env` and edit.
 | `DATAPULSE_ALLOWED_ORIGINS` | `*` | CORS origins. **Narrow this in production.** |
 | `DATAPULSE_MAX_STATE_DEPTH` | `32` | Reject `state` nested deeper than this with `422`. |
 | `DATAPULSE_MAX_STATE_BYTES` | `1048576` | Reject a `state` larger than this with `413`. |
+| `DATAPULSE_MAX_BATCH` | `500` | Reports accepted in one `/sync/batch` call. |
+| `DATAPULSE_ALERT_URL` | — | Webhook for silence alerts. Alerting is **off** unless this is set. |
+| `DATAPULSE_ALERT_AFTER` | `300` | Seconds without a sync before a node counts as silent. |
+| `DATAPULSE_ALERT_EVERY` | `30` | How often the watchdog checks. |
+| `DATAPULSE_ADAPTIVE` | `1` | Answer with a suggested reporting interval. `0` never suggests one. |
+| `DATAPULSE_QUIET_AFTER` | `3` | Identical reports in a row before the suggestion backs off. |
+| `DATAPULSE_MAX_INTERVAL` | `300` | Ceiling for the suggested interval, in seconds. |
+| `DATAPULSE_INTERVAL_FACTOR` | `2` | How fast the suggestion backs off. |
 
 ---
 

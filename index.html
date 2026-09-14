@@ -166,6 +166,15 @@
 .verdict.bad{background:rgba(200,120,20,.10);border:1px solid rgba(200,120,20,.45)}
 @media(max-width:680px){.calcwrap{grid-template-columns:1fr}}
 .vidcap{color:var(--mut);font-size:.92rem;margin:.55rem 0 1.6rem;text-align:center}
+.trygrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}
+@media(max-width:760px){.trygrid{grid-template-columns:1fr}}
+#try textarea{width:100%;min-height:140px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:10px}
+#try label{display:block;font-weight:600;font-size:.92rem;margin-bottom:6px}
+.trybtns{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}
+.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--mut)}
+.tryout{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;
+  font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-x:auto;min-height:96px}
 </style>
 </head>
 <body>
@@ -178,6 +187,7 @@
       <a class="navlink" href="#install" data-i="nav_install"></a>
       <a class="navlink" href="#numbers" data-i="nav_numbers"></a>
       <a class="navlink" href="#calc" data-i="nav_calc"></a>
+      <a class="navlink" href="#try" data-i="nav_try"></a>
       <a class="navlink" href="#limits" data-i="nav_limits"></a>
       <a class="navlink" href="#faq" data-i="nav_faq"></a>
       <a class="navlink" href="#team" data-i="nav_team"></a>
@@ -368,6 +378,29 @@ docker compose up -d</code></pre>
     <p class="note" data-i="ca_note"></p>
   </div></section>
 
+  <section id="try"><div class="wrap">
+    <h2 data-i="tr_h"></h2>
+    <p data-i="tr_p"></p>
+    <div class="trygrid">
+      <div>
+        <label data-i="tr_l1"></label>
+        <textarea id="tA" spellcheck="false">{"device_id":"truck-114","lat":44.5372,"lon":18.6673,"speed":0,"ignition":false,"fuel_pct":62,"odo_km":183422,"battery_v":12.6,"signal":-71,"fw":"2.4.1"}</textarea>
+      </div>
+      <div>
+        <label data-i="tr_l2"></label>
+        <textarea id="tB" spellcheck="false">{"device_id":"truck-114","lat":44.5372,"lon":18.6673,"speed":0,"ignition":false,"fuel_pct":62,"odo_km":183422,"battery_v":12.6,"signal":-71,"fw":"2.4.1"}</textarea>
+      </div>
+    </div>
+    <div class="trybtns">
+      <button class="btn" id="tRun" data-i="tr_run"></button>
+      <button class="btn ghost" id="tSame" data-i="tr_same"></button>
+      <button class="btn ghost" id="tOne" data-i="tr_one"></button>
+      <button class="btn ghost" id="tAll" data-i="tr_all"></button>
+    </div>
+    <pre class="tryout" id="tOut"></pre>
+    <p class="note" data-i="tr_note"></p>
+  </div></section>
+
   <section id="faq"><div class="wrap">
     <h2 data-i="faq_h"></h2>
     <details class="faq"><summary data-i="q1"></summary><p data-i="a1"></p></details>
@@ -456,7 +489,7 @@ bs:{
  nav_faq:"Pitanja",
  nav_team:"Autor",
  video_h:"Za trideset sekundi, bez čitanja",
- video_p:"Šta radi i zašto to nekome vrijedi novca.", video_c1:"Novo — izračunajte svoju uštedu na svojim podacima.", video_c2:"Kraći pregled — šta IzgoN radi.",
+ video_p:"Šta radi i zašto to nekome vrijedi novca.", video_c1:"Novo — izračunajte svoju uštedu na svojim podacima.", video_c2:"Kraći pregled — šta IzgoN radi.", nav_try:"Probaj", tr_h:"Probajte na svoja dva izvještaja", tr_p:"Zalijepite dva uzastopna izvještaja istog uređaja i vidite šta bi server vratio. Račun se radi ovdje u pregledniku — ništa se ne šalje.", tr_l1:"Prošli izvještaj", tr_l2:"Novi izvještaj", tr_run:"Uporedi", tr_same:"Ništa se nije promijenilo", tr_one:"Jedno polje se promijenilo", tr_all:"Sve se promijenilo", tr_note:"Isto pravilo koje server stvarno primjenjuje: identično — ništa ne putuje; promijenjeno — putuju samo ta polja; a kad bi razlika bila veća od cijelog stanja, putuje cijelo stanje.",
  how_h:"Kako radi",
  how_p:"Uređaj pošalje POST sa svojim trenutnim stanjem. IzgoN ga uporedi sa zadnjim koje pamti za taj uređaj i vrati jedan od tri odgovora. Klijent mora znati sva tri:",
  how_th1:"Odgovor",
@@ -572,7 +605,7 @@ en:{
  nav_faq:"FAQ",
  nav_team:"Author",
  video_h:"Thirty seconds, no reading",
- video_p:"What it does, and why that is worth money to someone.", video_c1:"New — work out your own saving on your own numbers.", video_c2:"Shorter overview — what IzgoN does.",
+ video_p:"What it does, and why that is worth money to someone.", video_c1:"New — work out your own saving on your own numbers.", video_c2:"Shorter overview — what IzgoN does.", nav_try:"Try it", tr_h:"Try it on two of your own reports", tr_p:"Paste two consecutive reports from the same device and see what the server would answer. The maths runs here in your browser — nothing is sent anywhere.", tr_l1:"Previous report", tr_l2:"New report", tr_run:"Compare", tr_same:"Nothing changed", tr_one:"One field changed", tr_all:"Everything changed", tr_note:"The same rule the server actually applies: identical — nothing travels; changed — only those fields travel; and when the diff would be bigger than the whole state, the whole state travels.",
  how_h:"How it works",
  how_p:"A device POSTs its current state. IzgoN compares it against the last state it holds for that device and returns one of three answers. A client has to handle all three:",
  how_th1:"Answer",
@@ -688,7 +721,7 @@ de:{
  nav_faq:"FAQ",
  nav_team:"Autor",
  video_h:"Dreißig Sekunden, ohne zu lesen",
- video_p:"Was es tut, und warum das jemandem Geld wert ist.", video_c1:"Neu — berechnen Sie Ihre Ersparnis mit Ihren eigenen Zahlen.", video_c2:"Kurzer Überblick — was IzgoN macht.",
+ video_p:"Was es tut, und warum das jemandem Geld wert ist.", video_c1:"Neu — berechnen Sie Ihre Ersparnis mit Ihren eigenen Zahlen.", video_c2:"Kurzer Überblick — was IzgoN macht.", nav_try:"Ausprobieren", tr_h:"Testen Sie es mit zwei eigenen Berichten", tr_p:"Fügen Sie zwei aufeinanderfolgende Berichte desselben Geräts ein und sehen Sie, was der Server antworten würde. Die Rechnung läuft hier im Browser — nichts wird gesendet.", tr_l1:"Vorheriger Bericht", tr_l2:"Neuer Bericht", tr_run:"Vergleichen", tr_same:"Nichts geändert", tr_one:"Ein Feld geändert", tr_all:"Alles geändert", tr_note:"Dieselbe Regel, die der Server wirklich anwendet: identisch — nichts wird übertragen; geändert — nur diese Felder; und wäre die Differenz größer als der ganze Zustand, wird der ganze Zustand übertragen.",
  how_h:"Wie es funktioniert",
  how_p:"Ein Gerät sendet seinen aktuellen Zustand per POST. IzgoN vergleicht ihn mit dem zuletzt gespeicherten und antwortet mit einem von drei Ergebnissen. Ein Client muss alle drei behandeln:",
  how_th1:"Antwort",
@@ -804,7 +837,7 @@ fr:{
  nav_faq:"FAQ",
  nav_team:"Auteur",
  video_h:"Trente secondes, sans lire",
- video_p:"Ce que ça fait, et pourquoi cela vaut de l'argent à quelqu'un.", video_c1:"Nouveau — calculez votre économie sur vos propres chiffres.", video_c2:"Aperçu plus court — ce que fait IzgoN.",
+ video_p:"Ce que ça fait, et pourquoi cela vaut de l'argent à quelqu'un.", video_c1:"Nouveau — calculez votre économie sur vos propres chiffres.", video_c2:"Aperçu plus court — ce que fait IzgoN.", nav_try:"Essayer", tr_h:"Essayez avec deux de vos propres rapports", tr_p:"Collez deux rapports consécutifs du même appareil et voyez ce que le serveur répondrait. Le calcul se fait ici dans votre navigateur — rien n'est envoyé.", tr_l1:"Rapport précédent", tr_l2:"Nouveau rapport", tr_run:"Comparer", tr_same:"Rien n'a changé", tr_one:"Un champ a changé", tr_all:"Tout a changé", tr_note:"La même règle que le serveur applique vraiment : identique — rien ne circule ; modifié — seuls ces champs ; et si la différence dépassait l'état entier, c'est l'état entier qui circule.",
  how_h:"Comment ça marche",
  how_p:"Un appareil envoie son état courant en POST. IzgoN le compare au dernier état qu'il détient pour cet appareil et renvoie l'une de trois réponses. Un client doit gérer les trois :",
  how_th1:"Réponse",
@@ -920,7 +953,7 @@ ja:{
  nav_faq:"よくある質問",
  nav_team:"作者",
  video_h:"30 秒で、読まずに",
- video_p:"何をするのか、そしてなぜそれに金銭的価値があるのか。", video_c1:"新着 — 自分の数値で削減量を計算できます。", video_c2:"短い概要 — IzgoN の動作。",
+ video_p:"何をするのか、そしてなぜそれに金銭的価値があるのか。", video_c1:"新着 — 自分の数値で削減量を計算できます。", video_c2:"短い概要 — IzgoN の動作。", nav_try:"試す", tr_h:"自分のレポート2件で試す", tr_p:"同じ端末の連続する2件のレポートを貼り付けると、サーバーの応答が分かります。計算はブラウザ内で行われ、どこにも送信されません。", tr_l1:"前のレポート", tr_l2:"新しいレポート", tr_run:"比較", tr_same:"変化なし", tr_one:"1項目だけ変化", tr_all:"すべて変化", tr_note:"サーバーが実際に使う規則と同じです。同一なら何も送らず、変化した項目だけを送り、差分が状態全体より大きくなる場合は状態全体を送ります。",
  how_h:"仕組み",
  how_p:"機器が現在の状態を POST します。IzgoN はその機器について保持している最後の状態と比較し、3 つのいずれかを返します。クライアントは 3 つとも扱う必要があります。",
  how_th1:"応答",
@@ -1036,7 +1069,7 @@ zh:{
  nav_faq:"常见问题",
  nav_team:"作者",
  video_h:"三十秒，不用读字",
- video_p:"它做什么，以及为什么这对某些人值钱。", video_c1:"新增 — 用你自己的数字算出节省量。", video_c2:"简短介绍 — IzgoN 做什么。",
+ video_p:"它做什么，以及为什么这对某些人值钱。", video_c1:"新增 — 用你自己的数字算出节省量。", video_c2:"简短介绍 — IzgoN 做什么。", nav_try:"试一试", tr_h:"用你自己的两份报文试试", tr_p:"粘贴同一设备连续的两份报文，看服务器会怎么回应。计算在你的浏览器里完成，不会发送到任何地方。", tr_l1:"上一份报文", tr_l2:"新的报文", tr_run:"比较", tr_same:"没有变化", tr_one:"一个字段变化", tr_all:"全部变化", tr_note:"与服务器实际使用的规则相同：完全相同就什么都不传；有变化只传变化的字段；若差异大于整个状态，则传整个状态。",
  how_h:"工作原理",
  how_p:"设备用 POST 提交当前状态。IzgoN 与它为该设备保存的上一个状态比较，返回三种结果之一。客户端必须处理全部三种：",
  how_th1:"返回",
@@ -1183,6 +1216,100 @@ function flat(o, pre, out){
 }
 function fmt(n, d){ return new Intl.NumberFormat(document.documentElement.lang||'en',
   {minimumFractionDigits:d||0, maximumFractionDigits:d||0}).format(n); }
+
+// ---------------------------------------------------------------- sandbox
+// Isto pravilo koje server primjenjuje, napisano ovdje da posjetilac ne mora
+// nista instalirati da bi vidio sta se desava. Racuna se u pregledniku: nema
+// API kljuca u stranici, nema opterecenja na demo server, i radi i kad demo
+// spava.
+const IZ_DELETED = "__deleted__";
+
+function izDelta(oldS, newS){
+  // Mora davati bajt u bajt isto sto i server, inace stranica laze posjetiocu.
+  // Nadgrobni znak je {"__deleted__":true}, ne golo "__deleted__" - to je 7
+  // bajta razlike po obrisanom polju i vidi se odmah kad neko uporedi.
+  const stari = oldS || {};
+  const out = {};
+  for (const k of Object.keys(newS)){
+    const b = newS[k];
+    const ima = Object.prototype.hasOwnProperty.call(stari, k);
+    const a = stari[k];
+    const objA = ima && a && typeof a === "object" && !Array.isArray(a);
+    const objB = b && typeof b === "object" && !Array.isArray(b);
+    if (objA && objB){
+      const sub = izDelta(a, b);
+      if (Object.keys(sub).length) out[k] = sub;
+    } else if (!ima || JSON.stringify(a) !== JSON.stringify(b)){
+      out[k] = b;
+    }
+  }
+  for (const k of Object.keys(stari)) if (!(k in newS)) out[k] = {[IZ_DELETED]: true};
+  return out;
+}
+
+const izBytes = o => new TextEncoder().encode(JSON.stringify(o)).length;
+
+function izEvaluate(oldS, newS){
+  const full = izBytes(newS);
+  if (oldS !== null && JSON.stringify(oldS) === JSON.stringify(newS))
+    return {status:"NO_CHANGE", delta:null, bytes_full:full, bytes_sent:0};
+  const d = izDelta(oldS, newS);
+  const db = izBytes(d);
+  if (db >= full)
+    return {status:"FULL_STATE", delta:newS, bytes_full:full, bytes_sent:full};
+  return {status:"SYNC_REQUIRED", delta:d, bytes_full:full, bytes_sent:db};
+}
+
+function tryRun(){
+  const out = document.getElementById("tOut");
+  let a, b;
+  try { a = JSON.parse(document.getElementById("tA").value); }
+  catch(e){ out.textContent = "⚠  " + (T[pickedLang()] && T[pickedLang()].tr_l1 || "previous") + ": " + e.message; return; }
+  try { b = JSON.parse(document.getElementById("tB").value); }
+  catch(e){ out.textContent = "⚠  " + (T[pickedLang()] && T[pickedLang()].tr_l2 || "new") + ": " + e.message; return; }
+  const r = izEvaluate(a, b);
+  const pct = r.bytes_full ? (100*(1 - r.bytes_sent/r.bytes_full)) : 0;
+  const linije = [
+    'POST /api/nodes/<your-device>/sync',
+    "",
+    '  "status": "' + r.status + '"',
+    "  bytes_full:  " + r.bytes_full,
+    "  bytes_sent:  " + r.bytes_sent + "   (" + pct.toFixed(1) + "% )",
+  ];
+  if (r.delta !== null) linije.push("", "  " + JSON.stringify(r.delta));
+  out.textContent = linije.join("\n");
+}
+
+function pickedLang(){ return document.documentElement.lang || "en"; }
+
+function tryPreset(vrsta){
+  const A = document.getElementById("tA"), B = document.getElementById("tB");
+  let a;
+  try { a = JSON.parse(A.value); } catch(e){ return tryRun(); }
+  if (vrsta === "same") B.value = JSON.stringify(a);
+  if (vrsta === "one"){
+    const kopija = JSON.parse(JSON.stringify(a));
+    const kljuc = Object.keys(kopija).find(k => typeof kopija[k] === "number");
+    if (kljuc !== undefined) kopija[kljuc] = kopija[kljuc] + 1;
+    B.value = JSON.stringify(kopija);
+  }
+  if (vrsta === "all"){
+    const kopija = {};
+    for (const k of Object.keys(a)){
+      const v = a[k];
+      kopija[k] = typeof v === "number" ? v + 7
+                : typeof v === "boolean" ? !v
+                : typeof v === "string" ? v + "-x" : v;
+    }
+    B.value = JSON.stringify(kopija);
+  }
+  tryRun();
+}
+
+document.getElementById("tRun").addEventListener("click", tryRun);
+document.getElementById("tSame").addEventListener("click", () => tryPreset("same"));
+document.getElementById("tOne").addEventListener("click", () => tryPreset("one"));
+document.getElementById("tAll").addEventListener("click", () => tryPreset("all"));
 
 function calc(){
   const out = document.getElementById('cOut');
