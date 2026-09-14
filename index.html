@@ -165,6 +165,7 @@
 .verdict.good{background:rgba(30,160,90,.10);border:1px solid rgba(30,160,90,.45)}
 .verdict.bad{background:rgba(200,120,20,.10);border:1px solid rgba(200,120,20,.45)}
 @media(max-width:680px){.calcwrap{grid-template-columns:1fr}}
+.vidcap{color:var(--mut);font-size:.92rem;margin:.55rem 0 1.6rem;text-align:center}
 </style>
 </head>
 <body>
@@ -223,10 +224,18 @@
     <h2 data-i="video_h"></h2>
     <p data-i="video_p"></p>
     <div class="video">
+      <iframe src="https://www.youtube-nocookie.com/embed/W-bliuoYiqg"
+              title="IzgoN" loading="lazy" allowfullscreen
+              allow="accelerometer; clipboard-write; encrypted-media; picture-in-picture"></iframe>
+    </div>
+    <p class="vidcap" data-i="video_c1"></p>
+
+    <div class="video">
       <iframe src="https://www.youtube-nocookie.com/embed/5-w5LsfOFmE"
               title="IzgoN" loading="lazy" allowfullscreen
               allow="accelerometer; clipboard-write; encrypted-media; picture-in-picture"></iframe>
     </div>
+    <p class="vidcap" data-i="video_c2"></p>
   </div></section>
 
   <section id="what"><div class="wrap">
@@ -393,7 +402,7 @@ docker compose up -d</code></pre>
       <a class="lk" href="https://github.com/izGamber/IZgoN/blob/main/BENCHMARK.md"><b data-i="lk5"></b><span>BENCHMARK.md</span></a>
       <a class="lk" href="https://github.com/izGamber/IZgoN/blob/main/CHANGELOG.md"><b data-i="lk6"></b><span>CHANGELOG.md</span></a>
       <a class="lk" href="https://github.com/izGamber/IZgoN/blob/main/LICENSE.md"><b data-i="lk7"></b><span>LICENSE.md</span></a>
-      <a class="lk" href="https://www.youtube.com/watch?v=5-w5LsfOFmE"><b data-i="lk8"></b><span>youtube.com</span></a>
+      <a class="lk" href="https://www.youtube.com/watch?v=W-bliuoYiqg"><b data-i="lk8"></b><span>youtube.com</span></a>
       <a class="lk" href="https://github.com/izGamber/IZgoN/issues"><b data-i="lk9"></b><span>GitHub Issues</span></a>
     </div>
   </div></section>
@@ -415,7 +424,7 @@ docker compose up -d</code></pre>
     <a href="https://github.com/izGamber/IZgoN/blob/main/BENCHMARK.md" data-i="f_bench"></a>
     <a href="https://github.com/izGamber/IZgoN/blob/main/CHANGELOG.md" data-i="f_chg"></a>
     <a href="https://izgon-api.onrender.com" data-i="f_demo"></a>
-    <a href="https://www.youtube.com/watch?v=5-w5LsfOFmE" data-i="f_vid"></a>
+    <a href="https://www.youtube.com/watch?v=W-bliuoYiqg" data-i="f_vid"></a>
   </div>
   <p data-i="f_note"></p>
   <p style="margin-top:10px">© 2026 Adnan Drndić · <span data-i="f_lic"></span></p>
@@ -447,7 +456,7 @@ bs:{
  nav_faq:"Pitanja",
  nav_team:"Autor",
  video_h:"Za trideset sekundi, bez čitanja",
- video_p:"Šta radi i zašto to nekome vrijedi novca.",
+ video_p:"Šta radi i zašto to nekome vrijedi novca.", video_c1:"Novo — izračunajte svoju uštedu na svojim podacima.", video_c2:"Kraći pregled — šta IzgoN radi.",
  how_h:"Kako radi",
  how_p:"Uređaj pošalje POST sa svojim trenutnim stanjem. IzgoN ga uporedi sa zadnjim koje pamti za taj uređaj i vrati jedan od tri odgovora. Klijent mora znati sva tri:",
  how_th1:"Odgovor",
@@ -563,7 +572,7 @@ en:{
  nav_faq:"FAQ",
  nav_team:"Author",
  video_h:"Thirty seconds, no reading",
- video_p:"What it does, and why that is worth money to someone.",
+ video_p:"What it does, and why that is worth money to someone.", video_c1:"New — work out your own saving on your own numbers.", video_c2:"Shorter overview — what IzgoN does.",
  how_h:"How it works",
  how_p:"A device POSTs its current state. IzgoN compares it against the last state it holds for that device and returns one of three answers. A client has to handle all three:",
  how_th1:"Answer",
@@ -679,7 +688,7 @@ de:{
  nav_faq:"FAQ",
  nav_team:"Autor",
  video_h:"Dreißig Sekunden, ohne zu lesen",
- video_p:"Was es tut, und warum das jemandem Geld wert ist.",
+ video_p:"Was es tut, und warum das jemandem Geld wert ist.", video_c1:"Neu — berechnen Sie Ihre Ersparnis mit Ihren eigenen Zahlen.", video_c2:"Kurzer Überblick — was IzgoN macht.",
  how_h:"Wie es funktioniert",
  how_p:"Ein Gerät sendet seinen aktuellen Zustand per POST. IzgoN vergleicht ihn mit dem zuletzt gespeicherten und antwortet mit einem von drei Ergebnissen. Ein Client muss alle drei behandeln:",
  how_th1:"Antwort",
@@ -795,7 +804,7 @@ fr:{
  nav_faq:"FAQ",
  nav_team:"Auteur",
  video_h:"Trente secondes, sans lire",
- video_p:"Ce que ça fait, et pourquoi cela vaut de l'argent à quelqu'un.",
+ video_p:"Ce que ça fait, et pourquoi cela vaut de l'argent à quelqu'un.", video_c1:"Nouveau — calculez votre économie sur vos propres chiffres.", video_c2:"Aperçu plus court — ce que fait IzgoN.",
  how_h:"Comment ça marche",
  how_p:"Un appareil envoie son état courant en POST. IzgoN le compare au dernier état qu'il détient pour cet appareil et renvoie l'une de trois réponses. Un client doit gérer les trois :",
  how_th1:"Réponse",
@@ -911,7 +920,7 @@ ja:{
  nav_faq:"よくある質問",
  nav_team:"作者",
  video_h:"30 秒で、読まずに",
- video_p:"何をするのか、そしてなぜそれに金銭的価値があるのか。",
+ video_p:"何をするのか、そしてなぜそれに金銭的価値があるのか。", video_c1:"新着 — 自分の数値で削減量を計算できます。", video_c2:"短い概要 — IzgoN の動作。",
  how_h:"仕組み",
  how_p:"機器が現在の状態を POST します。IzgoN はその機器について保持している最後の状態と比較し、3 つのいずれかを返します。クライアントは 3 つとも扱う必要があります。",
  how_th1:"応答",
@@ -1027,7 +1036,7 @@ zh:{
  nav_faq:"常见问题",
  nav_team:"作者",
  video_h:"三十秒，不用读字",
- video_p:"它做什么，以及为什么这对某些人值钱。",
+ video_p:"它做什么，以及为什么这对某些人值钱。", video_c1:"新增 — 用你自己的数字算出节省量。", video_c2:"简短介绍 — IzgoN 做什么。",
  how_h:"工作原理",
  how_p:"设备用 POST 提交当前状态。IzgoN 与它为该设备保存的上一个状态比较，返回三种结果之一。客户端必须处理全部三种：",
  how_th1:"返回",
