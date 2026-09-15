@@ -51,6 +51,11 @@ plan has no persistent disk, so the SQLite event log goes with the container. Th
 image above is the same dashboard with traffic in it. To fill it yourself, point
 `benchmark.py` at the demo and watch the number climb.
 
+One minute, if you would rather watch than read — the calculator, the wire traffic
+in both directions, and the point where it stops paying off:
+[English](https://youtu.be/6KmmImWae4U) ·
+[Bosnian](https://youtu.be/L_mbv9n1MUc)
+
 ---
 
 ## Why not just use `jsonpatch`?

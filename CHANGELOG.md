@@ -24,6 +24,24 @@ and then printed the wrong one.
   No behaviour changed — the measured numbers were right, only the sentence
   naming them was wrong. 65 + 30 checks still pass unchanged.
 
+- Everything already published carried the same conflation and has been
+  corrected rather than quietly left alone: the comment on r/selfhosted, both
+  YouTube descriptions, and the site in all six languages. The two demo clips
+  were **re-recorded**, because a correction in a description does not reach
+  someone who is listening to the voiceover. In the new cuts the terminal shows
+  what travels in *both* directions — measured through this `app.py`, not
+  estimated —
+
+  ```
+  "status": "FULL_STATE"     device sent: 62 B   server sent: 52 B
+  "status": "NO_CHANGE"      device sent: 47 B   server sent:  0 B
+  "status": "SYNC_REQUIRED"  device sent: 62 B   server sent: 24 B
+  ```
+
+  and the calculator switches topology on screen, so the figure being spoken is
+  the figure being shown. The superseded clips stay online, unlisted, each
+  pointing at its replacement; nothing was deleted.
+
 ## 1.4.0 — 2026-09-14
 
 The release that fixes what IzgoN was measuring.
