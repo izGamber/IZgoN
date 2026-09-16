@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.4.2 — 2026-09-16
+
+The dashboard kept resetting to zero, and the reason turned out to cost money
+as well as credibility.
+
+### Fixed
+
+- **Totals now live in Redis, beside the node state.** The event log is a
+  SQLite file, and a SQLite file lives on a disk. On a host with no persistent
+  disk — Render's free plan, `docker run` with no volume, any ephemeral
+  container — that file is gone the moment the process stops. Node states
+  survived, because those were already in Redis; the counters did not. So the
+  one page meant to prove the saving proved nothing, and refilling it by hand
+  was a treadmill rather than a fix.
+
+  Nine integers and one set, incremented in a single pipeline per event. Not a
+  copy of the log — the log stays in SQLite, row by row, for anyone who wants to
+  query it — just the sums the dashboard reads. Without Redis nothing changes:
+  SQLite is still the answer, and `/api/metrics` now says which source a reading
+  came from in `counters`, because a number that quietly halves after a
+  reconnect looks like data loss and a reader deserves to know it is not.
+
+- **The free tier no longer resets on every deploy.** Same root cause, and the
+  half of it that was actually charging people wrongly: `event_count()` counted
+  rows in that same disposable SQLite file, so a customer who had passed 10,000
+  syncs was handed their free tier back on the next restart. It now reads the
+  larger of the two counts. Undercounting is the one direction that costs money.
+
+- Upgrading an existing instance keeps its history: on start-up, if the Redis
+  counters have never been seeded, the SQLite totals are carried across once.
+  Seeding happens in `init_db`, before a single event can be logged — doing it
+  lazily, on the first dashboard read, would have added the old rows on top of
+  whatever had been counted since start-up and inflated every figure on the
+  page. That bug existed for about an hour during development and is now what
+  three of the new checks exist to catch.
+
+- If Redis is flushed or replaced *while the server is running*, the counters
+  are deliberately left alone and that one reading falls back to the local log,
+  labelled `counters: "sqlite"`, with a banner on the dashboard. Behind and
+  labelled beats a confident zero. A restart repairs Redis.
+
+### Tests
+
+- `test_trajnost.py`, 37 checks, all of them about surviving a restart: the
+  disk is deleted with Redis left standing, and every figure has to come back
+  identical.
+- `hard_test.py`, 116 adversarial checks — empty states, `null`, 20 kB values,
+  emoji, `../../etc/passwd` as a node id, 25 concurrent syncs on one node — and
+  one that matters more than the rest: bytes are measured independently and
+  compared against what `/api/metrics` claims. They match exactly.
+- Two older checks were quietly testing nothing. `45`/`25` set an internal
+  `_degraded` flag to simulate Redis being down, but that flag only records that
+  the warning was already printed — with a real Redis running, Redis kept
+  answering and the SQLite fallback was never exercised. They now knock the
+  client over properly.
+
 ## 1.4.1 — 2026-09-14
 
 One correction, and it is the kind worth its own release rather than a quiet

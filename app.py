@@ -309,6 +309,11 @@ def flush_all_state() -> None:
     def _redis_flush():
         for k in _client.scan_iter(match=f"{_PREFIX}*"):
             _client.delete(k)
+        # The counters too. Without this a test suite run on a machine that has
+        # Redis inherits the previous run's totals and every byte assertion in
+        # it fails for a reason that has nothing to do with the code.
+        for k in _client.scan_iter(match=f"{_MPREFIX}*"):
+            _client.delete(k)
     def _memory_flush():
         _memory_state.clear()
         try:
@@ -392,11 +397,156 @@ def init_db(db_path: Optional[str] = None) -> None:
         _migrate(conn)
         conn.commit()
     _reset_event_count()
+    # Before any traffic. See the note on _seed_counters_if_empty for why the
+    # ordering is the whole safety of it.
+    _seed_counters_if_empty()
+
+
+# ---------------------------- counters in Redis ----------------------------
+#
+# The event log is a SQLite file, and a SQLite file lives on a disk. On a host
+# with no persistent disk - Render's free plan, `docker run` with no volume,
+# any ephemeral container - that file is gone the moment the process stops. The
+# node states survive, because those are in Redis; the counters do not, so the
+# dashboard resets to zero and the one page meant to prove the saving proves
+# nothing instead. Refilling it by hand is not a fix, it is a treadmill.
+#
+# So the totals live beside the state, in Redis. Nine integers and one set,
+# incremented in a single pipeline per event. Not a copy of the log - the log
+# stays in SQLite, per row, for anyone who wants to query it - just the sums
+# the dashboard actually reads.
+#
+# SQLite remains the answer when there is no Redis. Which source produced a
+# given reading is reported in `counters`, because a number that quietly halves
+# after a reconnect looks like data loss, and a reader deserves to know it is
+# not.
+_MPREFIX = "datapulse:metrics:"
+_M_SEEDED = _MPREFIX + "seeded"
+
+# Nine counters, because `both_ways_saved_pct` needs the reply bytes restricted
+# to the events where the request was measured too - summing all of them would
+# mix in rows that never had an uplink figure.
+_M_KEYS = (
+    "events",       # total sync events
+    "no_change",    # how many answered NO_CHANGE
+    "bytes_full",   # reply: what the naive server would have sent
+    "bytes_sent",   # reply: what it did send
+    "up_rows",      # events where the request itself was measured
+    "up_full",      # request: what a device sending the state would have sent
+    "up_sent",      # request: what it did send
+    "d_full",       # reply bytes, only over the up_rows events
+    "d_sent",       # reply bytes actually sent, only over the up_rows events
+)
+
+
+def _mkey(name: str) -> str:
+    return _MPREFIX + name
+
+
+def _metrics_incr(node_id: str, status: str, bytes_full: int, bytes_sent: int,
+                  uplink_full: int, uplink_sent: int) -> None:
+    """Add one event to the Redis counters. Silent no-op without Redis."""
+    def _do():
+        pipe = _client.pipeline(transaction=False)
+        pipe.incr(_mkey("events"))
+        if status == "NO_CHANGE":
+            pipe.incr(_mkey("no_change"))
+        pipe.incrby(_mkey("bytes_full"), bytes_full)
+        pipe.incrby(_mkey("bytes_sent"), bytes_sent)
+        if uplink_full > 0:
+            pipe.incr(_mkey("up_rows"))
+            pipe.incrby(_mkey("up_full"), uplink_full)
+            pipe.incrby(_mkey("up_sent"), uplink_sent)
+            pipe.incrby(_mkey("d_full"), bytes_full)
+            pipe.incrby(_mkey("d_sent"), bytes_sent)
+        pipe.sadd(_mkey("nodes"), node_id)
+        pipe.execute()
+
+    _redis_or_memory(_do, lambda: None)
+
+
+def _seed_counters_if_empty() -> None:
+    """First run against a Redis that has no counters yet: carry the SQLite
+    totals over, so upgrading an existing instance does not reset its history
+    to zero.
+
+    Called from init_db, i.e. at start-up, before a single event can have been
+    logged. That ordering is the whole safety of it: log_event writes to BOTH
+    SQLite and Redis, so seeding after any traffic would add those events a
+    second time and inflate every figure on the dashboard. Hence the second
+    guard below - if the counter is already moving, this process has served
+    traffic and the moment to seed has passed. Skipping then costs the old
+    history; seeding anyway would cost the truth.
+
+    SET NX makes it happen once even if two callers race.
+    """
+    try:
+        if int(_client.get(_mkey("events")) or 0) > 0:
+            return
+        if not _client.set(_M_SEEDED, "1", nx=True):
+            return
+    except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
+        return
+    try:
+        with _conn() as conn:
+            ev, bf, bs, nc = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(bytes_full),0), "
+                "COALESCE(SUM(bytes_sent),0), "
+                "COALESCE(SUM(CASE WHEN status='NO_CHANGE' THEN 1 ELSE 0 END),0) "
+                "FROM sync_events"
+            ).fetchone()
+            ur, uf, us, df, ds = conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(uplink_full),0), "
+                "COALESCE(SUM(uplink_sent),0), COALESCE(SUM(bytes_full),0), "
+                "COALESCE(SUM(bytes_sent),0) "
+                "FROM sync_events WHERE uplink_full > 0"
+            ).fetchone()
+            imena = [r[0] for r in conn.execute(
+                "SELECT DISTINCT node_id FROM sync_events")]
+        if not ev:
+            return
+        pipe = _client.pipeline(transaction=False)
+        for k, v in (("events", ev), ("no_change", nc), ("bytes_full", bf),
+                     ("bytes_sent", bs), ("up_rows", ur), ("up_full", uf),
+                     ("up_sent", us), ("d_full", df), ("d_sent", ds)):
+            pipe.incrby(_mkey(k), int(v))
+        if imena:
+            pipe.sadd(_mkey("nodes"), *imena)
+        pipe.execute()
+        print(f"[izgon] carried {ev} existing events from the SQLite log into "
+              f"the Redis counters, so the dashboard keeps its history.")
+    except (sqlite3.Error, redis.exceptions.RedisError):
+        # Seeding is best-effort. Losing it costs history on the dashboard,
+        # never correctness of what comes after.
+        pass
+
+
+def _counters_from_redis() -> Optional[dict]:
+    """The nine totals and the node count, or None if Redis is not answering.
+
+    Does not seed - that happens once, in init_db, before any traffic. Seeding
+    from here would run after events had already been counted and add the
+    SQLite rows on top of them."""
+    def _do():
+        pipe = _client.pipeline(transaction=False)
+        for k in _M_KEYS:
+            pipe.get(_mkey(k))
+        pipe.scard(_mkey("nodes"))
+        vals = pipe.execute()
+        out = {k: int(v or 0) for k, v in zip(_M_KEYS, vals[:-1])}
+        out["nodes"] = int(vals[-1] or 0)
+        return out
+
+    try:
+        return _redis_or_memory(_do, lambda: None)
+    except redis.exceptions.RedisError:
+        return None
 
 
 # The free-tier gate needs the number of logged events on every single sync.
 # Reading it with COUNT(*) scans the whole table, so the server gets slower the
-# longer it runs. Read it from SQLite once, then keep it in memory.
+# longer it runs. Read it once - from Redis when there is one, because that is
+# the count that survives a restart - then keep it in memory.
 _event_count: Optional[int] = None
 _count_lock = threading.Lock()
 
@@ -412,10 +562,24 @@ def event_count() -> int:
     global _event_count
     with _count_lock:
         if _event_count is None:
-            with _conn() as conn:
-                _event_count = conn.execute(
-                    "SELECT COUNT(*) FROM sync_events"
-                ).fetchone()[0]
+            # Redis first: on a host with no persistent disk the SQLite file is
+            # new after every restart, and counting it would hand a paying
+            # customer their free tier back on every deploy.
+            try:
+                with _conn() as conn:
+                    iz_baze = conn.execute(
+                        "SELECT COUNT(*) FROM sync_events"
+                    ).fetchone()[0]
+            except sqlite3.Error:
+                # Asked before init_db has run, or the file is not readable.
+                # Redis may still know the answer; a crash here would refuse
+                # every sync over a counter.
+                iz_baze = 0
+            c = _counters_from_redis()
+            # The larger of the two, always. Undercounting here is the one
+            # direction that costs money: it hands a customer past the free
+            # tier their free tier back.
+            _event_count = max(iz_baze, c["events"]) if c is not None else iz_baze
         return _event_count
 
 
@@ -431,26 +595,60 @@ def log_event(node_id: str, status: str, bytes_full: int, bytes_sent: int,
              uplink_full, uplink_sent, time.time()),
         )
         conn.commit()
+    _metrics_incr(node_id, status, bytes_full, bytes_sent, uplink_full, uplink_sent)
     with _count_lock:
         if _event_count is not None:
             _event_count += 1
 
 
-def real_metrics() -> dict:
+def _counters_from_sqlite() -> dict:
     with _conn() as conn:
-        total_events, total_full, total_sent, no_change = conn.execute(
+        ev, bf, bs, nc = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(bytes_full),0), COALESCE(SUM(bytes_sent),0), "
-            "SUM(CASE WHEN status='NO_CHANGE' THEN 1 ELSE 0 END) FROM sync_events"
+            "COALESCE(SUM(CASE WHEN status='NO_CHANGE' THEN 1 ELSE 0 END),0) "
+            "FROM sync_events"
         ).fetchone()
         nodes = conn.execute(
             "SELECT COUNT(DISTINCT node_id) FROM sync_events"
         ).fetchone()[0]
         # Only rows that actually measured the request. Rows from before v1.4.0
         # have 0 there; averaging them in would invent a saving.
-        up_rows, up_full, up_sent = conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(uplink_full),0), COALESCE(SUM(uplink_sent),0) "
+        ur, uf, us, df, ds = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(uplink_full),0), COALESCE(SUM(uplink_sent),0), "
+            "COALESCE(SUM(bytes_full),0), COALESCE(SUM(bytes_sent),0) "
             "FROM sync_events WHERE uplink_full > 0"
         ).fetchone()
+    return {"events": ev, "no_change": nc, "bytes_full": bf, "bytes_sent": bs,
+            "up_rows": ur, "up_full": uf, "up_sent": us,
+            "d_full": df, "d_sent": ds, "nodes": nodes}
+
+
+def real_metrics() -> dict:
+    # Redis holds the totals that survive a restart; SQLite holds whatever this
+    # process has logged since it started. On a host with a real disk they agree.
+    # On one without, only the first is the truth, and saying which was used
+    # keeps a reader from reading a reconnect as lost data.
+    c = _counters_from_redis()
+    izvor = "redis"
+    if c is None:
+        c = _counters_from_sqlite()
+        izvor = "sqlite"
+    elif c["events"] == 0:
+        # Redis is answering but empty, and this process has a log with rows in
+        # it. That is a Redis that was flushed or replaced under a running
+        # server. Seeding it from here would land on top of whatever gets
+        # counted next and inflate every figure, so the counters are left alone
+        # and this one reading comes from the log instead - which is behind, but
+        # behind and labelled beats a confident zero. A restart repairs Redis.
+        sq = _counters_from_sqlite()
+        if sq["events"] > 0:
+            c, izvor = sq, "sqlite"
+
+    total_events = c["events"]
+    total_full, total_sent, no_change = c["bytes_full"], c["bytes_sent"], c["no_change"]
+    nodes = c["nodes"]
+    up_rows, up_full, up_sent = c["up_rows"], c["up_full"], c["up_sent"]
+    d_full, d_sent = c["d_full"], c["d_sent"]
 
     if not total_events:
         return {
@@ -466,6 +664,7 @@ def real_metrics() -> dict:
             "both_ways_saved_pct": None,
             "note": "No sync events logged yet - this is real, not a placeholder. "
                     "Run traffic through POST /api/nodes/{id}/sync to generate metrics.",
+            "counters": izvor,
         }
 
     saved_pct = round((1 - (total_sent / total_full)) * 100, 2) if total_full else 0.0
@@ -480,11 +679,6 @@ def real_metrics() -> dict:
     # into a misleading claim.
     both = None
     if up_rows and up_full:
-        with _conn() as conn:
-            d_full, d_sent = conn.execute(
-                "SELECT COALESCE(SUM(bytes_full),0), COALESCE(SUM(bytes_sent),0) "
-                "FROM sync_events WHERE uplink_full > 0"
-            ).fetchone()
         denom = up_full + d_full
         if denom:
             both = round((1 - ((up_sent + d_sent) / denom)) * 100, 2)
@@ -501,6 +695,10 @@ def real_metrics() -> dict:
         "uplink_bytes_actually_sent": up_sent,
         "uplink_saved_pct": up_pct,
         "both_ways_saved_pct": both,
+        # Where these totals came from. "redis" survives a restart; "sqlite" is
+        # only what this process logged since it started, which on a host with
+        # no persistent disk means since the last deploy.
+        "counters": izvor,
     }
 
 # ============================== licensing.py ==============================
@@ -599,7 +797,7 @@ def validate_license(key: Optional[str], public_key_b64: Optional[str] = None) -
 
 
 # ============================== inline static assets ==============================
-INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <link rel="manifest" href="/manifest.json">\n    <link rel="icon" href="/icon-192.png">\n    <link rel="apple-touch-icon" href="/icon-192.png">\n    <meta name="theme-color" content="#05060b">\n    <link rel="preconnect" href="https://fonts.googleapis.com">\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">\n    <style>\n        :root {\n            --bg: #05060b;\n            --card-bg: rgba(18, 22, 38, 0.55);\n            --card-border: rgba(120, 170, 255, 0.18);\n            --cyan: #37e6ff;\n            --violet: #a78bfa;\n            --magenta: #ff5fd8;\n            --green: #34ffb0;\n            --amber: #ffb454;\n            --text-main: #eef4ff;\n            --text-muted: #8fa0c4;\n        }\n        * { box-sizing: border-box; margin: 0; padding: 0; }\n        html, body { height: 100%; }\n        body {\n            background: var(--bg);\n            color: var(--text-main);\n            font-family: \'Space Mono\', ui-monospace, monospace;\n            overflow-x: hidden;\n            position: relative;\n            min-height: 100vh;\n            padding: 28px 20px 60px;\n        }\n\n        /* ---- animated holographic orb backdrop, same spirit as the\n           pulsing gradient orb shown during voice mode ---- */\n        .orb-field {\n            position: fixed;\n            inset: 0;\n            z-index: -2;\n            overflow: hidden;\n            pointer-events: none;\n        }\n        .orb {\n            position: absolute;\n            width: 60vmax;\n            height: 60vmax;\n            border-radius: 50%;\n            filter: blur(80px);\n            opacity: 0.45;\n            mix-blend-mode: screen;\n            animation: drift 22s ease-in-out infinite alternate;\n        }\n        .orb.a { background: radial-gradient(circle, var(--cyan), transparent 65%); top: -20%; left: -15%; animation-duration: 26s; }\n        .orb.b { background: radial-gradient(circle, var(--violet), transparent 65%); bottom: -25%; right: -10%; animation-duration: 30s; animation-delay: -6s; }\n        .orb.c { background: radial-gradient(circle, var(--magenta), transparent 65%); top: 30%; right: 20%; animation-duration: 20s; animation-delay: -12s; opacity: 0.3; }\n        @keyframes drift {\n            0%   { transform: translate(0, 0) scale(1) rotate(0deg); }\n            50%  { transform: translate(6%, -4%) scale(1.12) rotate(8deg); }\n            100% { transform: translate(-5%, 5%) scale(0.95) rotate(-6deg); }\n        }\n        .grid-overlay {\n            position: fixed;\n            inset: 0;\n            z-index: -1;\n            background-image:\n                linear-gradient(rgba(120,170,255,0.05) 1px, transparent 1px),\n                linear-gradient(90deg, rgba(120,170,255,0.05) 1px, transparent 1px);\n            background-size: 42px 42px;\n            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);\n            pointer-events: none;\n        }\n\n        header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }\n        .logo-area h1 {\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 900;\n            font-size: 30px;\n            letter-spacing: 2px;\n            background: linear-gradient(100deg, var(--cyan), var(--violet) 45%, var(--magenta) 90%);\n            -webkit-background-clip: text;\n            background-clip: text;\n            color: transparent;\n            background-size: 200% auto;\n            animation: shimmer 6s linear infinite;\n            text-shadow: 0 0 40px rgba(55, 230, 255, 0.25);\n        }\n        @keyframes shimmer { to { background-position: 200% center; } }\n        .logo-area p { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; max-width: 420px; line-height: 1.5; }\n\n        .system-status {\n            display: flex; align-items: center; gap: 10px;\n            padding: 9px 18px; border-radius: 30px; font-size: 11px; font-weight: 700;\n            letter-spacing: 1px;\n            backdrop-filter: blur(10px);\n            border: 1px solid var(--card-border);\n        }\n        .system-status.live { background: rgba(52, 255, 176, 0.08); border-color: var(--green); color: var(--green); box-shadow: 0 0 24px rgba(52,255,176,0.25); }\n        .system-status.no-data { background: rgba(143, 160, 196, 0.08); border-color: var(--text-muted); color: var(--text-muted); }\n        .system-status.down { background: rgba(255, 95, 95, 0.08); border-color: #ff5f5f; color: #ff5f5f; }\n        .pulse-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; animation: pulse 1.6s ease-in-out infinite; }\n        @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }\n\n        .buy-btn {\n            display: inline-flex; align-items: center; gap: 8px;\n            padding: 12px 26px;\n            border-radius: 14px;\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 700;\n            font-size: 13px;\n            letter-spacing: 1px;\n            text-decoration: none;\n            color: #05060b;\n            background: linear-gradient(100deg, var(--cyan), var(--violet), var(--magenta));\n            background-size: 200% auto;\n            box-shadow: 0 0 30px rgba(167, 139, 250, 0.45);\n            transition: transform 0.2s ease, box-shadow 0.2s ease;\n            animation: shimmer 5s linear infinite;\n        }\n        .buy-btn:active { transform: scale(0.97); }\n        .buy-note { font-size: 10.5px; color: var(--text-muted); margin-top: 8px; max-width: 280px; }\n\n        .note-box {\n            background: rgba(255, 180, 84, 0.06);\n            border: 1px solid var(--amber);\n            color: var(--amber);\n            padding: 14px 18px;\n            border-radius: 12px;\n            font-size: 12.5px;\n            margin-bottom: 25px;\n            backdrop-filter: blur(10px);\n        }\n\n        .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; margin-bottom: 26px; }\n        .metric-card {\n            position: relative;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 16px;\n            padding: 22px;\n            backdrop-filter: blur(16px);\n            overflow: hidden;\n        }\n        .metric-card::before {\n            content: \'\';\n            position: absolute; inset: -1px;\n            border-radius: 16px;\n            padding: 1px;\n            background: conic-gradient(from var(--angle, 0deg), var(--cyan), var(--violet), var(--magenta), var(--cyan));\n            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);\n            -webkit-mask-composite: xor;\n            mask-composite: exclude;\n            opacity: 0.55;\n            animation: spin 6s linear infinite;\n        }\n        @keyframes spin { to { --angle: 360deg; } }\n        @property --angle { syntax: \'<angle>\'; initial-value: 0deg; inherits: false; }\n        .metric-title { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }\n        .metric-value { font-family: \'Orbitron\', sans-serif; font-size: 30px; font-weight: 700; margin-top: 10px; color: #fff; text-shadow: 0 0 20px rgba(55,230,255,0.2); }\n        .metric-sub { font-size: 10.5px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }\n\n        table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(16px); }\n        th, td { text-align: left; padding: 13px 16px; font-size: 12px; border-bottom: 1px solid var(--card-border); }\n        th { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }\n        td { color: var(--text-main); }\n        .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 28px 0 12px; }\n\n        details.about {\n            margin-top: 30px;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 14px;\n            padding: 16px 20px;\n            backdrop-filter: blur(16px);\n            font-size: 12.5px;\n            line-height: 1.6;\n            color: var(--text-muted);\n        }\n        details.about summary { cursor: pointer; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; }\n        details.about ul { margin: 10px 0 0 18px; }\n\n        footer { margin-top: 30px; font-size: 10.5px; color: var(--text-muted); text-align: center; opacity: 0.7; }\n    </style>\n</head>\n<body>\n    <div class="orb-field">\n        <div class="orb a"></div>\n        <div class="orb b"></div>\n        <div class="orb c"></div>\n    </div>\n    <div class="grid-overlay"></div>\n\n    <header>\n        <div class="logo-area">\n            <h1>IzgoN</h1>\n            <p>Delta-sync engine &mdash; source-available, self-hosted. Every figure below is read live from /api/metrics.</p>\n        </div>\n        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">\n            <div id="statusPill" class="system-status no-data">\n                <div class="pulse-dot"></div>\n                <span id="statusText">CHECKING&hellip;</span>\n            </div>\n            <a class="buy-btn" href="__PURCHASE_URL__" target="_blank" rel="noopener noreferrer">Buy a licence &mdash; $29</a>\n        </div>\n    </header>\n\n    <div id="storageNote" class="note-box" style="display:none;">Running without Redis &mdash; node state is being kept in memory and is lost when this process stops. Fine for a first look; start Redis beside it (docker-compose.yml in the repo) for a setup that survives restarts.</div>\n    <div id="noDataNote" class="note-box" style="display:none;">\n        This instance has had no traffic yet, so the counters below read zero. Measured results at three change rates are published in BENCHMARK.md &mdash; 94.3% saved at a 5% change rate, and 35.3% at 70%, where most of the reason to run this disappears. These numbers are real, not placeholders &mdash; they will populate once traffic\n        goes through <code>POST /api/nodes/{id}/sync</code>. Run <code>python benchmark.py</code> to generate a real sample.\n    </div>\n\n    <div class="grid-metrics">\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; server reply</div>\n            <div class="metric-value" id="mSaved">&mdash;</div>\n            <div class="metric-sub">vs. returning the full state every time</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; device report</div>\n            <div class="metric-value" id="mUp">&mdash;</div>\n            <div class="metric-sub" id="mUpSub">needs conditional sync &mdash; devices sending a checksum instead of the state</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Sync Events Logged</div>\n            <div class="metric-value" id="mEvents">&mdash;</div>\n            <div class="metric-sub" id="mNoChange">&mdash;</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Active Nodes</div>\n            <div class="metric-value" id="mNodes">&mdash;</div>\n            <div class="metric-sub">distinct node_id values seen</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Bytes: Naive vs. Actual</div>\n            <div class="metric-value" id="mBytes">&mdash;</div>\n            <div class="metric-sub">total bytes, measured</div>\n        </div>\n    </div>\n\n    <div class="section-title">Known Nodes (requires API key &mdash; open with ?key= to load)</div>\n    <table>\n        <thead><tr><th>Node ID</th><th>Last known state</th></tr></thead>\n        <tbody id="nodesBody"><tr><td colspan="2" style="color:var(--text-muted)">Set API key via ?key= query param to load.</td></tr></tbody>\n    </table>\n\n    <details class="about">\n        <summary>O projektu / What is IzgoN?</summary>\n        <p style="margin-top:8px;">IzgoN sends only what changed instead of the full state every sync &mdash; a hash-based delta-sync engine you self-host, built for fleets that report state often over metered links &mdash; IoT and sensor devices on cellular SIMs, edge agents on constrained connections, monitoring agents polling every few seconds &mdash; where most fields stay identical between reports.</p>\n        <ul>\n            <li>Real FastAPI backend, Redis-backed state, SQLite event log &mdash; nothing here is simulated.</li>\n            <li>Offline license verification &mdash; no phone-home server required after purchase.</li>\n            <li>Source-available licence &mdash; read, run and modify it yourself. Free up to 10,000 syncs; a one-time licence beyond that. Not open source: see LICENSE.md.</li>\n        </ul>\n    </details>\n\n    <footer>IzgoN &mdash; source-available delta-sync utility. See LICENSE.md.</footer>\n\n    <script>\n        const params = new URLSearchParams(window.location.search);\n        const apiKey = params.get(\'key\') || \'\';\n        // Keep the key out of the address bar. A key left in the URL ends up in\n        // browser history, in any proxy log on the way, and in the Referer header\n        // of every outbound request from this page. Read it once, then scrub it.\n        if (apiKey) {\n            try { history.replaceState(null, \'\', window.location.pathname); } catch (e) {}\n        }\n\n        async function refreshMetrics() {\n            try {\n                const res = await fetch(\'/api/metrics\');\n                const m = await res.json();\n                const pill = document.getElementById(\'statusPill\');\n                const text = document.getElementById(\'statusText\');\n                const note = document.getElementById(\'noDataNote\');\n                const sNote = document.getElementById(\'storageNote\');\n                if (sNote) sNote.style.display = (m.storage && m.storage !== \'redis\') ? \'block\' : \'none\';\n\n                if (m.total_sync_events === 0) {\n                    pill.className = \'system-status no-data\';\n                    text.textContent = \'NO DATA YET\';\n                    note.style.display = \'block\';\n                    document.getElementById(\'mSaved\').textContent = \'—\';\n                    document.getElementById(\'mUp\').textContent = \'—\';\n                    document.getElementById(\'mEvents\').textContent = \'0\';\n                    document.getElementById(\'mNoChange\').textContent = \'no NO_CHANGE events yet\';\n                    document.getElementById(\'mNodes\').textContent = \'0\';\n                    document.getElementById(\'mBytes\').textContent = \'—\';\n                    return;\n                }\n\n                pill.className = \'system-status live\';\n                text.textContent = \'LIVE — REAL DATA\';\n                note.style.display = \'none\';\n                document.getElementById(\'mSaved\').textContent = m.bandwidth_saved_pct + \'%\';\n                // Only shown when it was actually measured. A server whose\n                // clients all still upload the full state has saved nothing\n                // here, and must say so rather than borrow the reply figure.\n                if (m.uplink_saved_pct === null || m.uplink_saved_pct === undefined) {\n                    document.getElementById(\'mUp\').textContent = \'0%\';\n                    document.getElementById(\'mUpSub\').textContent = \'no device has used conditional sync yet\';\n                } else {\n                    document.getElementById(\'mUp\').textContent = m.uplink_saved_pct + \'%\';\n                    document.getElementById(\'mUpSub\').textContent = m.uplink_events_measured + \' reports measured, both ways: \' + m.both_ways_saved_pct + \'%\';\n                }\n                document.getElementById(\'mEvents\').textContent = m.total_sync_events;\n                document.getElementById(\'mNoChange\').textContent = m.no_change_events + \' were NO_CHANGE (0 bytes)\';\n                document.getElementById(\'mNodes\').textContent = m.active_nodes;\n                document.getElementById(\'mBytes\').textContent =\n                    m.bytes_actually_sent + \' / \' + m.bytes_full_if_naive + \' B\';\n            } catch (e) {\n                const pill = document.getElementById(\'statusPill\');\n                pill.className = \'system-status down\';\n                document.getElementById(\'statusText\').textContent = \'API UNREACHABLE\';\n            }\n        }\n\n        async function refreshNodes() {\n            if (!apiKey) return;\n            try {\n                const res = await fetch(\'/api/nodes\', { headers: { \'X-API-Key\': apiKey } });\n                if (!res.ok) throw new Error(\'unauthorized\');\n                const data = await res.json();\n                const body = document.getElementById(\'nodesBody\');\n                body.innerHTML = \'\';\n                if (data.nodes.length === 0) {\n                    body.innerHTML = \'<tr><td colspan="2" style="color:var(--text-muted)">No nodes yet.</td></tr>\';\n                }\n                for (const n of data.nodes) {\n                    const tr = document.createElement(\'tr\');\n                    tr.innerHTML = `<td>${n.node_id}</td><td><code>${JSON.stringify(n.state)}</code></td>`;\n                    body.appendChild(tr);\n                }\n            } catch (e) {\n                document.getElementById(\'nodesBody\').innerHTML =\n                    \'<tr><td colspan="2" style="color:var(--text-muted)">Invalid/missing API key.</td></tr>\';\n            }\n        }\n\n        refreshMetrics();\n        refreshNodes();\n        setInterval(refreshMetrics, 3000);\n        setInterval(refreshNodes, 5000);\n\n        if (\'serviceWorker\' in navigator) {\n            window.addEventListener(\'load\', () => {\n                navigator.serviceWorker.register(\'/sw.js\').catch(() => {});\n            });\n        }\n    </script>\n</body>\n</html>\n'
+INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <link rel="manifest" href="/manifest.json">\n    <link rel="icon" href="/icon-192.png">\n    <link rel="apple-touch-icon" href="/icon-192.png">\n    <meta name="theme-color" content="#05060b">\n    <link rel="preconnect" href="https://fonts.googleapis.com">\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">\n    <style>\n        :root {\n            --bg: #05060b;\n            --card-bg: rgba(18, 22, 38, 0.55);\n            --card-border: rgba(120, 170, 255, 0.18);\n            --cyan: #37e6ff;\n            --violet: #a78bfa;\n            --magenta: #ff5fd8;\n            --green: #34ffb0;\n            --amber: #ffb454;\n            --text-main: #eef4ff;\n            --text-muted: #8fa0c4;\n        }\n        * { box-sizing: border-box; margin: 0; padding: 0; }\n        html, body { height: 100%; }\n        body {\n            background: var(--bg);\n            color: var(--text-main);\n            font-family: \'Space Mono\', ui-monospace, monospace;\n            overflow-x: hidden;\n            position: relative;\n            min-height: 100vh;\n            padding: 28px 20px 60px;\n        }\n\n        /* ---- animated holographic orb backdrop, same spirit as the\n           pulsing gradient orb shown during voice mode ---- */\n        .orb-field {\n            position: fixed;\n            inset: 0;\n            z-index: -2;\n            overflow: hidden;\n            pointer-events: none;\n        }\n        .orb {\n            position: absolute;\n            width: 60vmax;\n            height: 60vmax;\n            border-radius: 50%;\n            filter: blur(80px);\n            opacity: 0.45;\n            mix-blend-mode: screen;\n            animation: drift 22s ease-in-out infinite alternate;\n        }\n        .orb.a { background: radial-gradient(circle, var(--cyan), transparent 65%); top: -20%; left: -15%; animation-duration: 26s; }\n        .orb.b { background: radial-gradient(circle, var(--violet), transparent 65%); bottom: -25%; right: -10%; animation-duration: 30s; animation-delay: -6s; }\n        .orb.c { background: radial-gradient(circle, var(--magenta), transparent 65%); top: 30%; right: 20%; animation-duration: 20s; animation-delay: -12s; opacity: 0.3; }\n        @keyframes drift {\n            0%   { transform: translate(0, 0) scale(1) rotate(0deg); }\n            50%  { transform: translate(6%, -4%) scale(1.12) rotate(8deg); }\n            100% { transform: translate(-5%, 5%) scale(0.95) rotate(-6deg); }\n        }\n        .grid-overlay {\n            position: fixed;\n            inset: 0;\n            z-index: -1;\n            background-image:\n                linear-gradient(rgba(120,170,255,0.05) 1px, transparent 1px),\n                linear-gradient(90deg, rgba(120,170,255,0.05) 1px, transparent 1px);\n            background-size: 42px 42px;\n            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);\n            pointer-events: none;\n        }\n\n        header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }\n        .logo-area h1 {\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 900;\n            font-size: 30px;\n            letter-spacing: 2px;\n            background: linear-gradient(100deg, var(--cyan), var(--violet) 45%, var(--magenta) 90%);\n            -webkit-background-clip: text;\n            background-clip: text;\n            color: transparent;\n            background-size: 200% auto;\n            animation: shimmer 6s linear infinite;\n            text-shadow: 0 0 40px rgba(55, 230, 255, 0.25);\n        }\n        @keyframes shimmer { to { background-position: 200% center; } }\n        .logo-area p { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; max-width: 420px; line-height: 1.5; }\n\n        .system-status {\n            display: flex; align-items: center; gap: 10px;\n            padding: 9px 18px; border-radius: 30px; font-size: 11px; font-weight: 700;\n            letter-spacing: 1px;\n            backdrop-filter: blur(10px);\n            border: 1px solid var(--card-border);\n        }\n        .system-status.live { background: rgba(52, 255, 176, 0.08); border-color: var(--green); color: var(--green); box-shadow: 0 0 24px rgba(52,255,176,0.25); }\n        .system-status.no-data { background: rgba(143, 160, 196, 0.08); border-color: var(--text-muted); color: var(--text-muted); }\n        .system-status.down { background: rgba(255, 95, 95, 0.08); border-color: #ff5f5f; color: #ff5f5f; }\n        .pulse-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; animation: pulse 1.6s ease-in-out infinite; }\n        @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }\n\n        .buy-btn {\n            display: inline-flex; align-items: center; gap: 8px;\n            padding: 12px 26px;\n            border-radius: 14px;\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 700;\n            font-size: 13px;\n            letter-spacing: 1px;\n            text-decoration: none;\n            color: #05060b;\n            background: linear-gradient(100deg, var(--cyan), var(--violet), var(--magenta));\n            background-size: 200% auto;\n            box-shadow: 0 0 30px rgba(167, 139, 250, 0.45);\n            transition: transform 0.2s ease, box-shadow 0.2s ease;\n            animation: shimmer 5s linear infinite;\n        }\n        .buy-btn:active { transform: scale(0.97); }\n        .buy-note { font-size: 10.5px; color: var(--text-muted); margin-top: 8px; max-width: 280px; }\n\n        .note-box {\n            background: rgba(255, 180, 84, 0.06);\n            border: 1px solid var(--amber);\n            color: var(--amber);\n            padding: 14px 18px;\n            border-radius: 12px;\n            font-size: 12.5px;\n            margin-bottom: 25px;\n            backdrop-filter: blur(10px);\n        }\n\n        .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; margin-bottom: 26px; }\n        .metric-card {\n            position: relative;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 16px;\n            padding: 22px;\n            backdrop-filter: blur(16px);\n            overflow: hidden;\n        }\n        .metric-card::before {\n            content: \'\';\n            position: absolute; inset: -1px;\n            border-radius: 16px;\n            padding: 1px;\n            background: conic-gradient(from var(--angle, 0deg), var(--cyan), var(--violet), var(--magenta), var(--cyan));\n            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);\n            -webkit-mask-composite: xor;\n            mask-composite: exclude;\n            opacity: 0.55;\n            animation: spin 6s linear infinite;\n        }\n        @keyframes spin { to { --angle: 360deg; } }\n        @property --angle { syntax: \'<angle>\'; initial-value: 0deg; inherits: false; }\n        .metric-title { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }\n        .metric-value { font-family: \'Orbitron\', sans-serif; font-size: 30px; font-weight: 700; margin-top: 10px; color: #fff; text-shadow: 0 0 20px rgba(55,230,255,0.2); }\n        .metric-sub { font-size: 10.5px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }\n\n        table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(16px); }\n        th, td { text-align: left; padding: 13px 16px; font-size: 12px; border-bottom: 1px solid var(--card-border); }\n        th { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }\n        td { color: var(--text-main); }\n        .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 28px 0 12px; }\n\n        details.about {\n            margin-top: 30px;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 14px;\n            padding: 16px 20px;\n            backdrop-filter: blur(16px);\n            font-size: 12.5px;\n            line-height: 1.6;\n            color: var(--text-muted);\n        }\n        details.about summary { cursor: pointer; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; }\n        details.about ul { margin: 10px 0 0 18px; }\n\n        footer { margin-top: 30px; font-size: 10.5px; color: var(--text-muted); text-align: center; opacity: 0.7; }\n    </style>\n</head>\n<body>\n    <div class="orb-field">\n        <div class="orb a"></div>\n        <div class="orb b"></div>\n        <div class="orb c"></div>\n    </div>\n    <div class="grid-overlay"></div>\n\n    <header>\n        <div class="logo-area">\n            <h1>IzgoN</h1>\n            <p>Delta-sync engine &mdash; source-available, self-hosted. Every figure below is read live from /api/metrics.</p>\n        </div>\n        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">\n            <div id="statusPill" class="system-status no-data">\n                <div class="pulse-dot"></div>\n                <span id="statusText">CHECKING&hellip;</span>\n            </div>\n            <a class="buy-btn" href="__PURCHASE_URL__" target="_blank" rel="noopener noreferrer">Buy a licence &mdash; $29</a>\n        </div>\n    </header>\n\n    <div id="counterNote" class="note-box" style="display:none;">Counters are being read from the local event log, not from Redis &mdash; Redis is up, but its totals are empty, which means it was flushed or replaced while this server was running. The figures below are only what this process has logged since it started. A restart carries the log back into Redis and repairs it.</div>\n    <div id="storageNote" class="note-box" style="display:none;">Running without Redis &mdash; node state is being kept in memory and is lost when this process stops. Fine for a first look; start Redis beside it (docker-compose.yml in the repo) for a setup that survives restarts.</div>\n    <div id="noDataNote" class="note-box" style="display:none;">\n        This instance has had no traffic yet, so the counters below read zero. Measured results at three change rates are published in BENCHMARK.md &mdash; 94.3% saved at a 5% change rate, and 35.3% at 70%, where most of the reason to run this disappears. These numbers are real, not placeholders &mdash; they will populate once traffic\n        goes through <code>POST /api/nodes/{id}/sync</code>. Run <code>python benchmark.py</code> to generate a real sample.\n    </div>\n\n    <div class="grid-metrics">\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; server reply</div>\n            <div class="metric-value" id="mSaved">&mdash;</div>\n            <div class="metric-sub">vs. returning the full state every time</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; device report</div>\n            <div class="metric-value" id="mUp">&mdash;</div>\n            <div class="metric-sub" id="mUpSub">needs conditional sync &mdash; devices sending a checksum instead of the state</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Sync Events Logged</div>\n            <div class="metric-value" id="mEvents">&mdash;</div>\n            <div class="metric-sub" id="mNoChange">&mdash;</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Active Nodes</div>\n            <div class="metric-value" id="mNodes">&mdash;</div>\n            <div class="metric-sub">distinct node_id values seen</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Bytes: Naive vs. Actual</div>\n            <div class="metric-value" id="mBytes">&mdash;</div>\n            <div class="metric-sub">total bytes, measured</div>\n        </div>\n    </div>\n\n    <div class="section-title">Known Nodes (requires API key &mdash; open with ?key= to load)</div>\n    <table>\n        <thead><tr><th>Node ID</th><th>Last known state</th></tr></thead>\n        <tbody id="nodesBody"><tr><td colspan="2" style="color:var(--text-muted)">Set API key via ?key= query param to load.</td></tr></tbody>\n    </table>\n\n    <details class="about">\n        <summary>O projektu / What is IzgoN?</summary>\n        <p style="margin-top:8px;">IzgoN sends only what changed instead of the full state every sync &mdash; a hash-based delta-sync engine you self-host, built for fleets that report state often over metered links &mdash; IoT and sensor devices on cellular SIMs, edge agents on constrained connections, monitoring agents polling every few seconds &mdash; where most fields stay identical between reports.</p>\n        <ul>\n            <li>Real FastAPI backend, Redis-backed state, SQLite event log &mdash; nothing here is simulated.</li>\n            <li>Offline license verification &mdash; no phone-home server required after purchase.</li>\n            <li>Source-available licence &mdash; read, run and modify it yourself. Free up to 10,000 syncs; a one-time licence beyond that. Not open source: see LICENSE.md.</li>\n        </ul>\n    </details>\n\n    <footer>IzgoN &mdash; source-available delta-sync utility. See LICENSE.md.</footer>\n\n    <script>\n        const params = new URLSearchParams(window.location.search);\n        const apiKey = params.get(\'key\') || \'\';\n        // Keep the key out of the address bar. A key left in the URL ends up in\n        // browser history, in any proxy log on the way, and in the Referer header\n        // of every outbound request from this page. Read it once, then scrub it.\n        if (apiKey) {\n            try { history.replaceState(null, \'\', window.location.pathname); } catch (e) {}\n        }\n\n        async function refreshMetrics() {\n            try {\n                const res = await fetch(\'/api/metrics\');\n                const m = await res.json();\n                const pill = document.getElementById(\'statusPill\');\n                const text = document.getElementById(\'statusText\');\n                const note = document.getElementById(\'noDataNote\');\n                const sNote = document.getElementById(\'storageNote\');\n                if (sNote) sNote.style.display = (m.storage && m.storage !== \'redis\') ? \'block\' : \'none\';\n                const cNote = document.getElementById(\'counterNote\');\n                if (cNote) cNote.style.display = (m.counters === \'sqlite\' && m.storage === \'redis\') ? \'block\' : \'none\';\n\n                if (m.total_sync_events === 0) {\n                    pill.className = \'system-status no-data\';\n                    text.textContent = \'NO DATA YET\';\n                    note.style.display = \'block\';\n                    document.getElementById(\'mSaved\').textContent = \'—\';\n                    document.getElementById(\'mUp\').textContent = \'—\';\n                    document.getElementById(\'mEvents\').textContent = \'0\';\n                    document.getElementById(\'mNoChange\').textContent = \'no NO_CHANGE events yet\';\n                    document.getElementById(\'mNodes\').textContent = \'0\';\n                    document.getElementById(\'mBytes\').textContent = \'—\';\n                    return;\n                }\n\n                pill.className = \'system-status live\';\n                text.textContent = \'LIVE — REAL DATA\';\n                note.style.display = \'none\';\n                document.getElementById(\'mSaved\').textContent = m.bandwidth_saved_pct + \'%\';\n                // Only shown when it was actually measured. A server whose\n                // clients all still upload the full state has saved nothing\n                // here, and must say so rather than borrow the reply figure.\n                if (m.uplink_saved_pct === null || m.uplink_saved_pct === undefined) {\n                    document.getElementById(\'mUp\').textContent = \'0%\';\n                    document.getElementById(\'mUpSub\').textContent = \'no device has used conditional sync yet\';\n                } else {\n                    document.getElementById(\'mUp\').textContent = m.uplink_saved_pct + \'%\';\n                    document.getElementById(\'mUpSub\').textContent = m.uplink_events_measured + \' reports measured, both ways: \' + m.both_ways_saved_pct + \'%\';\n                }\n                document.getElementById(\'mEvents\').textContent = m.total_sync_events;\n                document.getElementById(\'mNoChange\').textContent = m.no_change_events + \' were NO_CHANGE (0 bytes)\';\n                document.getElementById(\'mNodes\').textContent = m.active_nodes;\n                document.getElementById(\'mBytes\').textContent =\n                    m.bytes_actually_sent + \' / \' + m.bytes_full_if_naive + \' B\';\n            } catch (e) {\n                const pill = document.getElementById(\'statusPill\');\n                pill.className = \'system-status down\';\n                document.getElementById(\'statusText\').textContent = \'API UNREACHABLE\';\n            }\n        }\n\n        async function refreshNodes() {\n            if (!apiKey) return;\n            try {\n                const res = await fetch(\'/api/nodes\', { headers: { \'X-API-Key\': apiKey } });\n                if (!res.ok) throw new Error(\'unauthorized\');\n                const data = await res.json();\n                const body = document.getElementById(\'nodesBody\');\n                body.innerHTML = \'\';\n                if (data.nodes.length === 0) {\n                    body.innerHTML = \'<tr><td colspan="2" style="color:var(--text-muted)">No nodes yet.</td></tr>\';\n                }\n                for (const n of data.nodes) {\n                    const tr = document.createElement(\'tr\');\n                    tr.innerHTML = `<td>${n.node_id}</td><td><code>${JSON.stringify(n.state)}</code></td>`;\n                    body.appendChild(tr);\n                }\n            } catch (e) {\n                document.getElementById(\'nodesBody\').innerHTML =\n                    \'<tr><td colspan="2" style="color:var(--text-muted)">Invalid/missing API key.</td></tr>\';\n            }\n        }\n\n        refreshMetrics();\n        refreshNodes();\n        setInterval(refreshMetrics, 3000);\n        setInterval(refreshNodes, 5000);\n\n        if (\'serviceWorker\' in navigator) {\n            window.addEventListener(\'load\', () => {\n                navigator.serviceWorker.register(\'/sw.js\').catch(() => {});\n            });\n        }\n    </script>\n</body>\n</html>\n'
 MANIFEST_JSON = '{\n    "id": "/",\n    "name": "IzgoN Dashboard",\n    "short_name": "IzgoN",\n    "description": "Live dashboard for a self-hosted delta-sync service - real metrics only, no placeholders.",\n    "start_url": "/?source=pwa",\n    "scope": "/",\n    "display": "standalone",\n    "orientation": "portrait",\n    "background_color": "#05060b",\n    "theme_color": "#05060b",\n    "categories": ["utilities", "developer"],\n    "icons": [\n        { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },\n        { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },\n        { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }\n    ]\n}'
 SW_JS = '// IzgoN - service worker.\n// Caches only the static app shell so the dashboard installs and opens\n// offline. API calls (/api/*) are always fetched fresh from the network -\n// caching real metrics would risk showing stale numbers as if they were\n// live, which is exactly the kind of misleading behavior this project is\n// trying to get away from.\n//\n// The HTML shell is network-first for the same reason. It used to be\n// cache-first under a cache name that never changed, so after you upgraded\n// IzgoN every returning visitor kept seeing the old dashboard forever. The\n// cache name now carries the app version, and the shell is only served from\n// cache when the network is actually unreachable.\nconst CACHE_NAME = "izgon-shell-__APP_VERSION__";\nconst SHELL_FILES = [\n  "/",\n  "/manifest.json",\n  "/icon-192.png",\n  "/icon-512.png",\n];\n\nself.addEventListener("install", (event) => {\n  event.waitUntil(\n    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES))\n  );\n  self.skipWaiting();\n});\n\nself.addEventListener("activate", (event) => {\n  event.waitUntil(\n    caches.keys().then((keys) =>\n      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))\n    )\n  );\n  self.clients.claim();\n});\n\nself.addEventListener("fetch", (event) => {\n  const url = new URL(event.request.url);\n\n  // Never cache API responses - always real, always fresh.\n  if (url.pathname.startsWith("/api/") || url.pathname === "/healthz") {\n    return;\n  }\n\n  // The dashboard itself: network first, cache only as an offline fallback.\n  if (event.request.mode === "navigate" || url.pathname === "/") {\n    event.respondWith(\n      fetch(event.request)\n        .then((res) => {\n          const copy = res.clone();\n          caches.open(CACHE_NAME).then((c) => c.put("/", copy)).catch(() => {});\n          return res;\n        })\n        .catch(() => caches.match("/").then((c) => c || Response.error()))\n    );\n    return;\n  }\n\n  // Icons and the manifest do not change within a release.\n  event.respondWith(\n    caches.match(event.request).then((cached) => cached || fetch(event.request))\n  );\n});'
 ICON_192 = base64.b64decode('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')
@@ -718,7 +916,7 @@ async def lifespan(_app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="IzgoN", version="1.4.1", lifespan=lifespan)
+app = FastAPI(title="IzgoN", version="1.4.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

@@ -44,12 +44,13 @@ that direction — the per-SIM number is 39.9 %, not 64.9 %.
 
 ![IzgoN dashboard — bytes avoided, counted live from real traffic](izgon-dashboard.png)
 
-Live demo: <https://izgon-api.onrender.com> — two caveats before you click, because
-the free tier is honest about what it is. The first request takes 20–40 seconds to
-wake the instance. And the counters reset to zero every time it sleeps: the free
-plan has no persistent disk, so the SQLite event log goes with the container. The
-image above is the same dashboard with traffic in it. To fill it yourself, point
-`benchmark.py` at the demo and watch the number climb.
+Live demo: <https://izgon-api.onrender.com> — one caveat before you click, because
+the free tier is honest about what it is: the first request takes 20–40 seconds to
+wake the instance. The counters themselves survive it. They used to reset to zero
+on every sleep, because the SQLite event log sat on a disk the free plan throws
+away; since v1.4.2 the totals live in Redis beside the node state, and
+`/api/metrics` reports in `counters` which source a reading came from. To add
+traffic of your own, point `benchmark.py` at it and watch the number climb.
 
 One minute, if you would rather watch than read — the calculator, the wire traffic
 in both directions, and the point where it stops paying off:
