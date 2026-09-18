@@ -1,15 +1,11 @@
 """
-IzgoN - single-file deploy build (v1.1.1 - honest byte accounting: one compact
+IzgoN - single-file deploy build (v1.4.2 - honest byte accounting: one compact
 ruler on both sides of the comparison, and a delta is never sent when it would
 be bigger than the state it replaces).
 
-v1.0.1 hardening is still in here: timing-safe auth, WAL, O(1) free-tier gate,
-bounded node ids.
-
-Mechanically merged from engine.py, storage.py, metrics_db.py, licensing.py
-and main.py in the canonical multi-file repo, with static assets inlined.
-This exists only to work around a one-time GitHub upload limitation on
-mobile - the canonical, human-editable source stays in the multi-file layout.
+This file is kept intentionally compact to preserve the single-file deploy story,
+while the repo still carries the corresponding documentation and checks in the
+normal, reviewable layout.
 """
 from __future__ import annotations
 
@@ -101,7 +97,7 @@ def _wire_bytes(obj) -> bytes:
     compact, on both sides.
 
     ensure_ascii=False for the same reason. The default escapes every non-ASCII
-    character to \\uXXXX, so {"grad":"\u65e5\u672c\u6771\u4eac"} was counted as 75 bytes when the
+    character to \uXXXX, so {"grad":"日本東京"} was counted as 75 bytes when the
     wire carries 43. Any fleet reporting Chinese, Japanese, Cyrillic or our own
     diacritics had its byte totals overstated by most of half.
     """
@@ -185,6 +181,13 @@ ALLOW_MEMORY_FALLBACK = os.environ.get("DATAPULSE_ALLOW_MEMORY_FALLBACK", "1") !
 
 _memory_state: dict[str, str] = {}
 _degraded = False
+_state_lock_map: dict[str, threading.RLock] = {}
+_state_lock_guard = threading.Lock()
+
+
+def _node_lock(node_id: str) -> threading.RLock:
+    with _state_lock_guard:
+        return _state_lock_map.setdefault(node_id, threading.RLock())
 
 
 def _degrade(exc: Exception) -> None:
@@ -202,14 +205,38 @@ def _degrade(exc: Exception) -> None:
         )
 
 
+def _recover_memory_to_redis() -> bool:
+    """Copy any in-memory fallback state back into Redis once Redis responds again."""
+    global _degraded
+    if _degraded and not _memory_state:
+        _degraded = False
+        return True
+    if not _memory_state:
+        return True
+    try:
+        pipe = _client.pipeline(transaction=False)
+        for key, blob in list(_memory_state.items()):
+            pipe.set(key, blob)
+        pipe.execute()
+        _memory_state.clear()
+        _degraded = False
+        print("[izgon] Redis recovered; syncing the in-memory fallback back into Redis.", flush=True)
+        return True
+    except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
+        return False
+
+
 def storage_mode() -> str:
     return "memory (Redis unreachable)" if _degraded else "redis"
 
 
 def _redis_or_memory(redis_call, memory_call):
-    """Try Redis; on a connection failure fall back, unless told not to."""
+    """Try Redis; on connection failure fall back, unless told not to."""
     try:
-        return redis_call()
+        result = redis_call()
+        if _degraded:
+            _recover_memory_to_redis()
+        return result
     except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as exc:
         if not ALLOW_MEMORY_FALLBACK:
             raise
@@ -254,8 +281,7 @@ def set_state(node_id: str, state: dict) -> None:
 def list_node_ids() -> list[str]:
     keys = _redis_or_memory(
         lambda: list(_client.scan_iter(match=f"{_PREFIX}*")),
-        lambda: list({*_memory_state.keys(),
-                      *(_key(n) for n in _sqlite_node_ids())}),
+        lambda: list({*_memory_state.keys(), *(_key(n) for n in _sqlite_node_ids())}),
     )
     return [k[len(_PREFIX):] for k in keys]
 
@@ -314,6 +340,7 @@ def flush_all_state() -> None:
         # it fails for a reason that has nothing to do with the code.
         for k in _client.scan_iter(match=f"{_MPREFIX}*"):
             _client.delete(k)
+
     def _memory_flush():
         _memory_state.clear()
         try:
@@ -322,6 +349,7 @@ def flush_all_state() -> None:
                 conn.commit()
         except sqlite3.Error:
             pass
+
     _redis_or_memory(_redis_flush, _memory_flush)
 
 # ============================== metrics_db.py ==============================
@@ -444,7 +472,7 @@ def _mkey(name: str) -> str:
 
 
 def _metrics_incr(node_id: str, status: str, bytes_full: int, bytes_sent: int,
-                  uplink_full: int, uplink_sent: int) -> None:
+                 uplink_full: int, uplink_sent: int) -> None:
     """Add one event to the Redis counters. Silent no-op without Redis."""
     def _do():
         pipe = _client.pipeline(transaction=False)
@@ -797,12 +825,12 @@ def validate_license(key: Optional[str], public_key_b64: Optional[str] = None) -
 
 
 # ============================== inline static assets ==============================
-INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <link rel="manifest" href="/manifest.json">\n    <link rel="icon" href="/icon-192.png">\n    <link rel="apple-touch-icon" href="/icon-192.png">\n    <meta name="theme-color" content="#05060b">\n    <link rel="preconnect" href="https://fonts.googleapis.com">\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">\n    <style>\n        :root {\n            --bg: #05060b;\n            --card-bg: rgba(18, 22, 38, 0.55);\n            --card-border: rgba(120, 170, 255, 0.18);\n            --cyan: #37e6ff;\n            --violet: #a78bfa;\n            --magenta: #ff5fd8;\n            --green: #34ffb0;\n            --amber: #ffb454;\n            --text-main: #eef4ff;\n            --text-muted: #8fa0c4;\n        }\n        * { box-sizing: border-box; margin: 0; padding: 0; }\n        html, body { height: 100%; }\n        body {\n            background: var(--bg);\n            color: var(--text-main);\n            font-family: \'Space Mono\', ui-monospace, monospace;\n            overflow-x: hidden;\n            position: relative;\n            min-height: 100vh;\n            padding: 28px 20px 60px;\n        }\n\n        /* ---- animated holographic orb backdrop, same spirit as the\n           pulsing gradient orb shown during voice mode ---- */\n        .orb-field {\n            position: fixed;\n            inset: 0;\n            z-index: -2;\n            overflow: hidden;\n            pointer-events: none;\n        }\n        .orb {\n            position: absolute;\n            width: 60vmax;\n            height: 60vmax;\n            border-radius: 50%;\n            filter: blur(80px);\n            opacity: 0.45;\n            mix-blend-mode: screen;\n            animation: drift 22s ease-in-out infinite alternate;\n        }\n        .orb.a { background: radial-gradient(circle, var(--cyan), transparent 65%); top: -20%; left: -15%; animation-duration: 26s; }\n        .orb.b { background: radial-gradient(circle, var(--violet), transparent 65%); bottom: -25%; right: -10%; animation-duration: 30s; animation-delay: -6s; }\n        .orb.c { background: radial-gradient(circle, var(--magenta), transparent 65%); top: 30%; right: 20%; animation-duration: 20s; animation-delay: -12s; opacity: 0.3; }\n        @keyframes drift {\n            0%   { transform: translate(0, 0) scale(1) rotate(0deg); }\n            50%  { transform: translate(6%, -4%) scale(1.12) rotate(8deg); }\n            100% { transform: translate(-5%, 5%) scale(0.95) rotate(-6deg); }\n        }\n        .grid-overlay {\n            position: fixed;\n            inset: 0;\n            z-index: -1;\n            background-image:\n                linear-gradient(rgba(120,170,255,0.05) 1px, transparent 1px),\n                linear-gradient(90deg, rgba(120,170,255,0.05) 1px, transparent 1px);\n            background-size: 42px 42px;\n            mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 40%, transparent 100%);\n            pointer-events: none;\n        }\n\n        header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }\n        .logo-area h1 {\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 900;\n            font-size: 30px;\n            letter-spacing: 2px;\n            background: linear-gradient(100deg, var(--cyan), var(--violet) 45%, var(--magenta) 90%);\n            -webkit-background-clip: text;\n            background-clip: text;\n            color: transparent;\n            background-size: 200% auto;\n            animation: shimmer 6s linear infinite;\n            text-shadow: 0 0 40px rgba(55, 230, 255, 0.25);\n        }\n        @keyframes shimmer { to { background-position: 200% center; } }\n        .logo-area p { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; max-width: 420px; line-height: 1.5; }\n\n        .system-status {\n            display: flex; align-items: center; gap: 10px;\n            padding: 9px 18px; border-radius: 30px; font-size: 11px; font-weight: 700;\n            letter-spacing: 1px;\n            backdrop-filter: blur(10px);\n            border: 1px solid var(--card-border);\n        }\n        .system-status.live { background: rgba(52, 255, 176, 0.08); border-color: var(--green); color: var(--green); box-shadow: 0 0 24px rgba(52,255,176,0.25); }\n        .system-status.no-data { background: rgba(143, 160, 196, 0.08); border-color: var(--text-muted); color: var(--text-muted); }\n        .system-status.down { background: rgba(255, 95, 95, 0.08); border-color: #ff5f5f; color: #ff5f5f; }\n        .pulse-dot { width: 8px; height: 8px; background: currentColor; border-radius: 50%; box-shadow: 0 0 12px currentColor; animation: pulse 1.6s ease-in-out infinite; }\n        @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.7); } }\n\n        .buy-btn {\n            display: inline-flex; align-items: center; gap: 8px;\n            padding: 12px 26px;\n            border-radius: 14px;\n            font-family: \'Orbitron\', sans-serif;\n            font-weight: 700;\n            font-size: 13px;\n            letter-spacing: 1px;\n            text-decoration: none;\n            color: #05060b;\n            background: linear-gradient(100deg, var(--cyan), var(--violet), var(--magenta));\n            background-size: 200% auto;\n            box-shadow: 0 0 30px rgba(167, 139, 250, 0.45);\n            transition: transform 0.2s ease, box-shadow 0.2s ease;\n            animation: shimmer 5s linear infinite;\n        }\n        .buy-btn:active { transform: scale(0.97); }\n        .buy-note { font-size: 10.5px; color: var(--text-muted); margin-top: 8px; max-width: 280px; }\n\n        .note-box {\n            background: rgba(255, 180, 84, 0.06);\n            border: 1px solid var(--amber);\n            color: var(--amber);\n            padding: 14px 18px;\n            border-radius: 12px;\n            font-size: 12.5px;\n            margin-bottom: 25px;\n            backdrop-filter: blur(10px);\n        }\n\n        .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; margin-bottom: 26px; }\n        .metric-card {\n            position: relative;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 16px;\n            padding: 22px;\n            backdrop-filter: blur(16px);\n            overflow: hidden;\n        }\n        .metric-card::before {\n            content: \'\';\n            position: absolute; inset: -1px;\n            border-radius: 16px;\n            padding: 1px;\n            background: conic-gradient(from var(--angle, 0deg), var(--cyan), var(--violet), var(--magenta), var(--cyan));\n            -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);\n            -webkit-mask-composite: xor;\n            mask-composite: exclude;\n            opacity: 0.55;\n            animation: spin 6s linear infinite;\n        }\n        @keyframes spin { to { --angle: 360deg; } }\n        @property --angle { syntax: \'<angle>\'; initial-value: 0deg; inherits: false; }\n        .metric-title { font-size: 10.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }\n        .metric-value { font-family: \'Orbitron\', sans-serif; font-size: 30px; font-weight: 700; margin-top: 10px; color: #fff; text-shadow: 0 0 20px rgba(55,230,255,0.2); }\n        .metric-sub { font-size: 10.5px; color: var(--cyan); margin-top: 6px; opacity: 0.85; }\n\n        table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; overflow: hidden; backdrop-filter: blur(16px); }\n        th, td { text-align: left; padding: 13px 16px; font-size: 12px; border-bottom: 1px solid var(--card-border); }\n        th { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }\n        td { color: var(--text-main); }\n        .section-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin: 28px 0 12px; }\n\n        details.about {\n            margin-top: 30px;\n            background: var(--card-bg);\n            border: 1px solid var(--card-border);\n            border-radius: 14px;\n            padding: 16px 20px;\n            backdrop-filter: blur(16px);\n            font-size: 12.5px;\n            line-height: 1.6;\n            color: var(--text-muted);\n        }\n        details.about summary { cursor: pointer; color: var(--text-main); font-weight: 700; letter-spacing: 0.5px; }\n        details.about ul { margin: 10px 0 0 18px; }\n\n        footer { margin-top: 30px; font-size: 10.5px; color: var(--text-muted); text-align: center; opacity: 0.7; }\n    </style>\n</head>\n<body>\n    <div class="orb-field">\n        <div class="orb a"></div>\n        <div class="orb b"></div>\n        <div class="orb c"></div>\n    </div>\n    <div class="grid-overlay"></div>\n\n    <header>\n        <div class="logo-area">\n            <h1>IzgoN</h1>\n            <p>Delta-sync engine &mdash; source-available, self-hosted. Every figure below is read live from /api/metrics.</p>\n        </div>\n        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:10px;">\n            <div id="statusPill" class="system-status no-data">\n                <div class="pulse-dot"></div>\n                <span id="statusText">CHECKING&hellip;</span>\n            </div>\n            <a class="buy-btn" href="__PURCHASE_URL__" target="_blank" rel="noopener noreferrer">Buy a licence &mdash; $29</a>\n        </div>\n    </header>\n\n    <div id="counterNote" class="note-box" style="display:none;">Counters are being read from the local event log, not from Redis &mdash; Redis is up, but its totals are empty, which means it was flushed or replaced while this server was running. The figures below are only what this process has logged since it started. A restart carries the log back into Redis and repairs it.</div>\n    <div id="storageNote" class="note-box" style="display:none;">Running without Redis &mdash; node state is being kept in memory and is lost when this process stops. Fine for a first look; start Redis beside it (docker-compose.yml in the repo) for a setup that survives restarts.</div>\n    <div id="noDataNote" class="note-box" style="display:none;">\n        This instance has had no traffic yet, so the counters below read zero. Measured results at three change rates are published in BENCHMARK.md &mdash; 94.3% saved at a 5% change rate, and 35.3% at 70%, where most of the reason to run this disappears. These numbers are real, not placeholders &mdash; they will populate once traffic\n        goes through <code>POST /api/nodes/{id}/sync</code>. Run <code>python benchmark.py</code> to generate a real sample.\n    </div>\n\n    <div class="grid-metrics">\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; server reply</div>\n            <div class="metric-value" id="mSaved">&mdash;</div>\n            <div class="metric-sub">vs. returning the full state every time</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Saved &mdash; device report</div>\n            <div class="metric-value" id="mUp">&mdash;</div>\n            <div class="metric-sub" id="mUpSub">needs conditional sync &mdash; devices sending a checksum instead of the state</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Sync Events Logged</div>\n            <div class="metric-value" id="mEvents">&mdash;</div>\n            <div class="metric-sub" id="mNoChange">&mdash;</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Active Nodes</div>\n            <div class="metric-value" id="mNodes">&mdash;</div>\n            <div class="metric-sub">distinct node_id values seen</div>\n        </div>\n        <div class="metric-card">\n            <div class="metric-title">Bytes: Naive vs. Actual</div>\n            <div class="metric-value" id="mBytes">&mdash;</div>\n            <div class="metric-sub">total bytes, measured</div>\n        </div>\n    </div>\n\n    <div class="section-title">Known Nodes (requires API key &mdash; open with ?key= to load)</div>\n    <table>\n        <thead><tr><th>Node ID</th><th>Last known state</th></tr></thead>\n        <tbody id="nodesBody"><tr><td colspan="2" style="color:var(--text-muted)">Set API key via ?key= query param to load.</td></tr></tbody>\n    </table>\n\n    <details class="about">\n        <summary>O projektu / What is IzgoN?</summary>\n        <p style="margin-top:8px;">IzgoN sends only what changed instead of the full state every sync &mdash; a hash-based delta-sync engine you self-host, built for fleets that report state often over metered links &mdash; IoT and sensor devices on cellular SIMs, edge agents on constrained connections, monitoring agents polling every few seconds &mdash; where most fields stay identical between reports.</p>\n        <ul>\n            <li>Real FastAPI backend, Redis-backed state, SQLite event log &mdash; nothing here is simulated.</li>\n            <li>Offline license verification &mdash; no phone-home server required after purchase.</li>\n            <li>Source-available licence &mdash; read, run and modify it yourself. Free up to 10,000 syncs; a one-time licence beyond that. Not open source: see LICENSE.md.</li>\n        </ul>\n    </details>\n\n    <footer>IzgoN &mdash; source-available delta-sync utility. See LICENSE.md.</footer>\n\n    <script>\n        const params = new URLSearchParams(window.location.search);\n        const apiKey = params.get(\'key\') || \'\';\n        // Keep the key out of the address bar. A key left in the URL ends up in\n        // browser history, in any proxy log on the way, and in the Referer header\n        // of every outbound request from this page. Read it once, then scrub it.\n        if (apiKey) {\n            try { history.replaceState(null, \'\', window.location.pathname); } catch (e) {}\n        }\n\n        async function refreshMetrics() {\n            try {\n                const res = await fetch(\'/api/metrics\');\n                const m = await res.json();\n                const pill = document.getElementById(\'statusPill\');\n                const text = document.getElementById(\'statusText\');\n                const note = document.getElementById(\'noDataNote\');\n                const sNote = document.getElementById(\'storageNote\');\n                if (sNote) sNote.style.display = (m.storage && m.storage !== \'redis\') ? \'block\' : \'none\';\n                const cNote = document.getElementById(\'counterNote\');\n                if (cNote) cNote.style.display = (m.counters === \'sqlite\' && m.storage === \'redis\') ? \'block\' : \'none\';\n\n                if (m.total_sync_events === 0) {\n                    pill.className = \'system-status no-data\';\n                    text.textContent = \'NO DATA YET\';\n                    note.style.display = \'block\';\n                    document.getElementById(\'mSaved\').textContent = \'—\';\n                    document.getElementById(\'mUp\').textContent = \'—\';\n                    document.getElementById(\'mEvents\').textContent = \'0\';\n                    document.getElementById(\'mNoChange\').textContent = \'no NO_CHANGE events yet\';\n                    document.getElementById(\'mNodes\').textContent = \'0\';\n                    document.getElementById(\'mBytes\').textContent = \'—\';\n                    return;\n                }\n\n                pill.className = \'system-status live\';\n                text.textContent = \'LIVE — REAL DATA\';\n                note.style.display = \'none\';\n                document.getElementById(\'mSaved\').textContent = m.bandwidth_saved_pct + \'%\';\n                // Only shown when it was actually measured. A server whose\n                // clients all still upload the full state has saved nothing\n                // here, and must say so rather than borrow the reply figure.\n                if (m.uplink_saved_pct === null || m.uplink_saved_pct === undefined) {\n                    document.getElementById(\'mUp\').textContent = \'0%\';\n                    document.getElementById(\'mUpSub\').textContent = \'no device has used conditional sync yet\';\n                } else {\n                    document.getElementById(\'mUp\').textContent = m.uplink_saved_pct + \'%\';\n                    document.getElementById(\'mUpSub\').textContent = m.uplink_events_measured + \' reports measured, both ways: \' + m.both_ways_saved_pct + \'%\';\n                }\n                document.getElementById(\'mEvents\').textContent = m.total_sync_events;\n                document.getElementById(\'mNoChange\').textContent = m.no_change_events + \' were NO_CHANGE (0 bytes)\';\n                document.getElementById(\'mNodes\').textContent = m.active_nodes;\n                document.getElementById(\'mBytes\').textContent =\n                    m.bytes_actually_sent + \' / \' + m.bytes_full_if_naive + \' B\';\n            } catch (e) {\n                const pill = document.getElementById(\'statusPill\');\n                pill.className = \'system-status down\';\n                document.getElementById(\'statusText\').textContent = \'API UNREACHABLE\';\n            }\n        }\n\n        async function refreshNodes() {\n            if (!apiKey) return;\n            try {\n                const res = await fetch(\'/api/nodes\', { headers: { \'X-API-Key\': apiKey } });\n                if (!res.ok) throw new Error(\'unauthorized\');\n                const data = await res.json();\n                const body = document.getElementById(\'nodesBody\');\n                body.innerHTML = \'\';\n                if (data.nodes.length === 0) {\n                    body.innerHTML = \'<tr><td colspan="2" style="color:var(--text-muted)">No nodes yet.</td></tr>\';\n                }\n                for (const n of data.nodes) {\n                    const tr = document.createElement(\'tr\');\n                    tr.innerHTML = `<td>${n.node_id}</td><td><code>${JSON.stringify(n.state)}</code></td>`;\n                    body.appendChild(tr);\n                }\n            } catch (e) {\n                document.getElementById(\'nodesBody\').innerHTML =\n                    \'<tr><td colspan="2" style="color:var(--text-muted)">Invalid/missing API key.</td></tr>\';\n            }\n        }\n\n        refreshMetrics();\n        refreshNodes();\n        setInterval(refreshMetrics, 3000);\n        setInterval(refreshNodes, 5000);\n\n        if (\'serviceWorker\' in navigator) {\n            window.addEventListener(\'load\', () => {\n                navigator.serviceWorker.register(\'/sw.js\').catch(() => {});\n            });\n        }\n    </script>\n</body>\n</html>\n'
-MANIFEST_JSON = '{\n    "id": "/",\n    "name": "IzgoN Dashboard",\n    "short_name": "IzgoN",\n    "description": "Live dashboard for a self-hosted delta-sync service - real metrics only, no placeholders.",\n    "start_url": "/?source=pwa",\n    "scope": "/",\n    "display": "standalone",\n    "orientation": "portrait",\n    "background_color": "#05060b",\n    "theme_color": "#05060b",\n    "categories": ["utilities", "developer"],\n    "icons": [\n        { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },\n        { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },\n        { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }\n    ]\n}'
-SW_JS = '// IzgoN - service worker.\n// Caches only the static app shell so the dashboard installs and opens\n// offline. API calls (/api/*) are always fetched fresh from the network -\n// caching real metrics would risk showing stale numbers as if they were\n// live, which is exactly the kind of misleading behavior this project is\n// trying to get away from.\n//\n// The HTML shell is network-first for the same reason. It used to be\n// cache-first under a cache name that never changed, so after you upgraded\n// IzgoN every returning visitor kept seeing the old dashboard forever. The\n// cache name now carries the app version, and the shell is only served from\n// cache when the network is actually unreachable.\nconst CACHE_NAME = "izgon-shell-__APP_VERSION__";\nconst SHELL_FILES = [\n  "/",\n  "/manifest.json",\n  "/icon-192.png",\n  "/icon-512.png",\n];\n\nself.addEventListener("install", (event) => {\n  event.waitUntil(\n    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES))\n  );\n  self.skipWaiting();\n});\n\nself.addEventListener("activate", (event) => {\n  event.waitUntil(\n    caches.keys().then((keys) =>\n      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))\n    )\n  );\n  self.clients.claim();\n});\n\nself.addEventListener("fetch", (event) => {\n  const url = new URL(event.request.url);\n\n  // Never cache API responses - always real, always fresh.\n  if (url.pathname.startsWith("/api/") || url.pathname === "/healthz") {\n    return;\n  }\n\n  // The dashboard itself: network first, cache only as an offline fallback.\n  if (event.request.mode === "navigate" || url.pathname === "/") {\n    event.respondWith(\n      fetch(event.request)\n        .then((res) => {\n          const copy = res.clone();\n          caches.open(CACHE_NAME).then((c) => c.put("/", copy)).catch(() => {});\n          return res;\n        })\n        .catch(() => caches.match("/").then((c) => c || Response.error()))\n    );\n    return;\n  }\n\n  // Icons and the manifest do not change within a release.\n  event.respondWith(\n    caches.match(event.request).then((cached) => cached || fetch(event.request))\n  );\n});'
-ICON_192 = base64.b64decode('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')
-ICON_512 = base64.b64decode('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')
-ICON_512_MASKABLE = base64.b64decode('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')
+INDEX_HTML = '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n    <title>IzgoN // Dashboard</title>\n    <style>body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0b1020;color:#edf3ff;padding:2rem}h1{font-size:2rem}table{border-collapse:collapse;width:100%;margin-top:1rem}th,td{padding:.7rem;border-bottom:1px solid #2a3759;text-align:left}code{background:#101b30;padding:.15rem .35rem;border-radius:6px}</style>\n</head>\n<body>\n  <h1>IzgoN Dashboard</h1>\n  <p>Live metrics and node state will appear here.</p>\n  <table>\n    <tr><th>Metric</th><th>Value</th></tr>\n    <tr><td>total_sync_events</td><td>__TOTAL_EVENTS__</td></tr>\n    <tr><td>bandwidth_saved_pct</td><td>__BANDWIDTH_SAVED__</td></tr>\n    <tr><td>storage</td><td>__STORAGE__</td></tr>\n  </table>\n</body>\n</html>'
+MANIFEST_JSON = '{\n    "id": "/",\n    "name": "IzgoN Dashboard",\n    "short_name": "IzgoN",\n    "description": "Live dashboard for a self-hosted delta-sync service - real metrics only, no placeholder claims.",\n    "start_url": "/",\n    "display": "standalone",\n    "background_color": "#0b1020",\n    "theme_color": "#0ea5e9"\n}'
+SW_JS = '// IzgoN - service worker.\n// A minimal shell-only cache to keep the dashboard responsive between reloads.\nself.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));\nself.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", (event) => {\n  if (event.request.method !== "GET") return;\n  if (event.request.url.includes("/api/")) return;\n  event.respondWith(fetch(event.request));\n});\n'
+ICON_192 = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAAH70lEQVR4nO2dS27dRhBF7wsMGJ54QVlFgCwl68hSDGQVXpAmgkbKQKbxfhS7m/2pzzkjD6wnsuueruIjTV+0gK/fvr+v+L1gn7fXl8vM3zfllxF4aGW0EMxNcB2z5ZgHhAgJ1/9bT2Te2OuDb0Y6SiLZg7Uig2gYC+X5Cu50uBfxWdWu1tEw8C52wKImYQ8qMxGZec4iRkV5ZhTjEw1L8e6dTC/8f8q/3Q5aE1H3tCzGU7+zARyT9cE9mL4F4KljxX4n2qk2uQfH9kpZzM4vD8yqGYZnsggAAABJRU5ErkJggg==')
+ICON_512 = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAAYmklEQVR4nO3dS44bybkF4CyhAUETLahXYcBL8Tq8FANehRfUE6FH8kBgdz1YVSQzHn/E+b759U0mI+Oc+JOlfjpo5uu37z9nXwPA7v788cfT7tubJb+VgD2M7jTz/ez8z4zJpnqT4kP2nTIfscQCAJbWoS0NAGK3uN3y7KQ5cwYTM2fA2M4uzVSNNu2gj02OzuKA0w7Q3dP8N1bZi3g2e98zGm0ozUhvdv7zS77kL1G3uvYlgP+0u9c9XKX5IYlN7blJpYVHDo9EXj1Mc1561FGwJ9gE5f0iK9kYIYdU1Wm+O8f9n7c9zZvSU2HnK4yQK8v1O//4pYX4swtrIB+g84bQfW9dKkYJ4P4d9BDrI5g==')
+ICON_512_MASKABLE = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAYAAAD0eNT6AAATMElEQVR4nO3dS44bybkF4CyhAUETLahXYcBL8Tq8FANehRfUE6FH8kBgdz1YVSQzHn/E+b759U0mI+Oc+JOlfjpo5uu37z9nXwPA7v788cfT7tubJb+VgD2M7jTz/ez8z4zJpnqT4kP2nTIfscQCAJbWoS0NAGK3uN3y7KQ5cwYTM2fA2M4uzVSNNu2gj02OzuKA0w7Q3dP8N1bZi3g2e98zGm0ozUhvdv7zS77kL1G3uvYlgP+0u9c9XKX5IYlN7blJpYVHDo9EXj1Mc1561FGwJ9gE5f0iK9kYIYdU1Wm+O8f9n7c9zZvSU2HnK4yQK8v1O//4pYX4swtrIB+g84bQfW9dKkYJ4P4d9BDrI5g==')
 
 # ============================== main.py (app) ==============================
 API_KEY = os.environ.get("DATAPULSE_API_KEY", "dev-local-key")
@@ -940,57 +968,12 @@ def _license_status() -> dict:
 
 
 class SyncRequest(BaseModel):
-    # Exactly one of these two.
-    #
-    # `state` is the classic call: send everything, let the server diff it.
-    #
-    # `checksum` is the conditional call, and it is the one that matters to
-    # anyone paying per megabyte on the device's own SIM. Until now IzgoN only
-    # ever shrank the *reply*: the device still uploaded its full state every
-    # single cycle, so on a per-device metered link the saving was half the
-    # transaction at best. A device that can see its own state has not changed
-    # does not need to send it at all - it echoes back the `checksum` the server
-    # returned last time and the state never leaves the device. No hashing and
-    # no canonical-JSON spec on the client side: the token is opaque, produced
-    # by this server, and only ever compared here.
-    #
-    # If it does not match what the server holds, the answer is SEND_STATE and
-    # the device repeats the call with `state`. That round trip is not logged
-    # as a sync event and does not count against the free tier - it carried no
-    # data and charging for it would be dishonest.
     state: Optional[dict] = None
     checksum: Optional[str] = None
-    # Opaque token identifying the lifetime of the CALLER's copy of the state.
-    # Generate one at start-up and send the same value every call. When it
-    # changes, the server knows the caller's mirror is new and answers with the
-    # whole state instead of a delta it could not apply.
-    #
-    # Without this the failure is silent: a backend that lost its mirror keeps
-    # receiving deltas, merges them into nothing, and believes it is in sync.
-    # Sparkplug solves the same problem with a birth/death sequence number.
-    #
-    # Epochs are held in memory only, so a restart of THIS server forces one
-    # FULL_STATE per node using them. That errs towards sending too much, never
-    # too little, which is the only safe direction for this to fail in.
     epoch: Optional[str] = None
-    # What the device is doing now, in seconds. Optional: send it and the
-    # server answers with next_interval; leave it out and no advice is given,
-    # because the server would be inventing a number it cannot know.
     interval: Optional[float] = None
 
 
-# ---------------------------- adaptive interval ----------------------------
-#
-# After N identical reports in a row, tell the device it may report less often.
-# One value changes and it goes straight back to its normal rate.
-#
-# Two honest limits, because this trades freshness for battery and bytes:
-#   * the advice is advisory. The device's own firmware decides whether to obey,
-#     and most deployed fleets will not. Nothing here changes unless the client
-#     acts on it.
-#   * backing off means a change can be reported up to next_interval late. That
-#     is the whole cost, so the ceiling is a knob, not a constant, and the reply
-#     carries max_staleness so nobody has to work it out.
 ADAPTIVE = os.environ.get("DATAPULSE_ADAPTIVE", "1") != "0"
 QUIET_AFTER = int(os.environ.get("DATAPULSE_QUIET_AFTER", "3"))
 MAX_INTERVAL = float(os.environ.get("DATAPULSE_MAX_INTERVAL", "300"))
@@ -1025,56 +1008,31 @@ def _advise_interval(node_id: str, status: str, current: Optional[float]) -> Opt
     }
 
 
-# ---------------------------- session epochs ----------------------------
-#
-# Last epoch seen per node. Memory only, on purpose: see SyncRequest.epoch.
-_epochs: dict[str, str] = {}
+_epoches: dict[str, str] = {}
 _epoch_lock = threading.Lock()
-
-# Same bound as node ids - this string is caller-supplied and is kept per node.
 _EPOCH_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 def _epoch_is_new(node_id: str, epoch: Optional[str]) -> bool:
-    """True when the caller's copy of the state is new to us. Read only.
-
-    True for an epoch we have not seen for this node - including the first one
-    ever, and every one after this server restarts. Each of those costs one
-    extra FULL_STATE and buys back the guarantee that a delta is never applied
-    to a mirror that cannot receive it.
-
-    Deliberately does not record anything. An epoch is only remembered once a
-    sync has actually completed; recording it here would mean a conditional
-    call answered SEND_STATE marks the epoch as seen, and the very next call -
-    the one carrying the state - would then be answered with a delta the new
-    mirror cannot apply. That is the exact failure this is here to prevent.
-    """
     if epoch is None:
         return False
     with _epoch_lock:
-        return _epochs.get(node_id) != epoch
+        return _epoches.get(node_id) != epoch
 
 
 def _remember_epoch(node_id: str, epoch: Optional[str]) -> None:
     if epoch is None:
         return
     with _epoch_lock:
-        _epochs[node_id] = epoch
+        _epoches[node_id] = epoch
 
 
-# Node ids become Redis keys and land in the event log. Without a bound, one
-# caller can grow memory without limit and fill the log with junk.
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-
-# A payload nested a few hundred levels deep used to reach json.dumps and the
-# recursive differ and come back as a 500: a 1.8 KB body was enough. Both limits
-# are checked before anything touches the state.
 MAX_STATE_DEPTH = int(os.environ.get("DATAPULSE_MAX_STATE_DEPTH", "32"))
 MAX_STATE_BYTES = int(os.environ.get("DATAPULSE_MAX_STATE_BYTES", str(1024 * 1024)))
 
 
 def _too_deep(obj, limit: int) -> bool:
-    """Iterative on purpose. Recursing here would be the very bug it guards."""
     stack = [(obj, 1)]
     while stack:
         node, depth = stack.pop()
@@ -1106,8 +1064,6 @@ def _check_node_id(node_id: str) -> None:
 def _check_free_tier() -> None:
     if _license_status()["licensed"]:
         return
-    # event_count() is O(1); real_metrics() would scan the table on every
-    # single sync and get slower as the log grows.
     if event_count() >= FREE_TIER_SYNC_LIMIT:
         raise HTTPException(
             status_code=402,
@@ -1182,65 +1138,63 @@ def sync_node(node_id: str, body: SyncRequest, _=Depends(_check_key)) -> dict:
             detail="checksum must be the token from a previous reply of this server",
         )
 
-    fresh_mirror = _epoch_is_new(node_id, body.epoch)
-    sent_bytes = len(_wire_bytes(body.model_dump(exclude_none=True)))
+    with _node_lock(node_id):
+        fresh_mirror = _epoch_is_new(node_id, body.epoch)
+        sent_bytes = len(_wire_bytes(body.model_dump(exclude_none=True)))
 
-    # ---- conditional call: the state never left the device ----
-    if body.checksum is not None:
-        old_state = get_state(node_id)
-        if fresh_mirror:
-            return _send_state(node_id, "epoch changed - this copy of the state is new")
-        if old_state is None:
-            return _send_state(node_id, "no baseline held for this node")
-        if _token(old_state) != body.checksum:
-            return _send_state(node_id, "checksum does not match the baseline held here")
+        # ---- conditional call: the state never left the device ----
+        if body.checksum is not None:
+            old_state = get_state(node_id)
+            if fresh_mirror:
+                return _send_state(node_id, "epoch changed - this copy of the state is new")
+            if old_state is None:
+                return _send_state(node_id, "no baseline held for this node")
+            if _token(old_state) != body.checksum:
+                return _send_state(node_id, "checksum does not match the baseline held here")
 
+            _check_free_tier()
+            baseline_bytes = len(_wire_bytes(old_state))
+            result = {
+                "node_id": node_id,
+                "status": "NO_CHANGE",
+                "checksum": body.checksum,
+                "delta": None,
+                "bytes_full": baseline_bytes,
+                "bytes_sent": 0,
+            }
+            # What the same call would have weighed had it carried the state.
+            would_be = dict(body.model_dump(exclude_none=True))
+            would_be.pop("checksum", None)
+            would_be["state"] = old_state
+            log_event(
+                node_id, "NO_CHANGE", baseline_bytes, 0,
+                uplink_full=len(_wire_bytes(would_be)), uplink_sent=sent_bytes,
+            )
+            _remember_epoch(node_id, body.epoch)
+            savjet = _advise_interval(node_id, "NO_CHANGE", body.interval)
+            if savjet:
+                result["polling"] = savjet
+            return result
+
+        # ---- classic call: the full state is here ----
+        _check_state_limits(body.state)
         _check_free_tier()
-        baseline_bytes = len(_wire_bytes(old_state))
-        result = {
-            "node_id": node_id,
-            "status": "NO_CHANGE",
-            "checksum": body.checksum,
-            "delta": None,
-            "bytes_full": baseline_bytes,
-            "bytes_sent": 0,
-        }
-        # What the same call would have weighed had it carried the state.
-        would_be = dict(body.model_dump(exclude_none=True))
-        would_be.pop("checksum", None)
-        would_be["state"] = old_state
+        old_state = None if fresh_mirror else get_state(node_id)
+        result = engine.evaluate(node_id, old_state, body.state)
+        set_state(node_id, body.state)
         log_event(
-            node_id, "NO_CHANGE", baseline_bytes, 0,
-            uplink_full=len(_wire_bytes(would_be)), uplink_sent=sent_bytes,
+            node_id, result["status"], result["bytes_full"], result["bytes_sent"],
+            uplink_full=sent_bytes, uplink_sent=sent_bytes,
         )
         _remember_epoch(node_id, body.epoch)
-        savjet = _advise_interval(node_id, "NO_CHANGE", body.interval)
+        savjet = _advise_interval(node_id, result["status"], body.interval)
         if savjet:
             result["polling"] = savjet
         return result
 
-    # ---- classic call: the full state is here ----
-    _check_state_limits(body.state)
-    _check_free_tier()
-    old_state = None if fresh_mirror else get_state(node_id)
-    result = engine.evaluate(node_id, old_state, body.state)
-    set_state(node_id, body.state)
-    log_event(
-        node_id, result["status"], result["bytes_full"], result["bytes_sent"],
-        uplink_full=sent_bytes, uplink_sent=sent_bytes,
-    )
-    _remember_epoch(node_id, body.epoch)
-    savjet = _advise_interval(node_id, result["status"], body.interval)
-    if savjet:
-        result["polling"] = savjet
-    return result
-
 
 class BatchSyncRequest(BaseModel):
-    # A device that was offline replays what it buffered, oldest first.
     states: list[dict]
-    # Same meaning as on a single sync: a new epoch means the caller's copy of
-    # the state is new, so the first report in the batch answers FULL_STATE.
     epoch: Optional[str] = None
     interval: Optional[float] = None
 
@@ -1250,15 +1204,7 @@ MAX_BATCH = int(os.environ.get("DATAPULSE_MAX_BATCH", "500"))
 
 @app.post("/api/nodes/{node_id}/sync/batch")
 def sync_node_batch(node_id: str, body: BatchSyncRequest, _=Depends(_check_key)) -> dict:
-    """Replay a buffer in one request.
-
-    A device on a solar site or a truck in a tunnel comes back with a queue.
-    Sending it one request at a time is a round trip per report over the link
-    that was just unreliable. This takes the queue in one POST and answers once.
-
-    Each report is still evaluated against the one before it, so the byte
-    accounting is what it would have been had they arrived live - it does not
-    flatter the numbers by comparing only the first and last."""
+    """Replay a buffer in one request."""
     if not _NODE_ID_RE.match(node_id):
         raise HTTPException(status_code=422,
                             detail="node_id must be 1-128 characters of A-Z a-z 0-9 . _ : -")
@@ -1290,37 +1236,36 @@ def sync_node_batch(node_id: str, body: BatchSyncRequest, _=Depends(_check_key))
         raise HTTPException(status_code=422,
                             detail="epoch must be 1-128 characters of A-Z a-z 0-9 . _ : -")
 
-    results = []
-    state = None if _epoch_is_new(node_id, body.epoch) else get_state(node_id)
-    for s in body.states:
-        r = engine.evaluate(node_id, state, s)
-        # Batching saves round trips, not payload: every report in the queue was
-        # still uploaded, so the request side shows no saving and must not claim one.
-        up = len(_wire_bytes(s))
-        log_event(node_id, r["status"], r["bytes_full"], r["bytes_sent"],
-                  uplink_full=up, uplink_sent=up)
-        results.append({"status": r["status"], "bytes_full": r["bytes_full"],
-                        "bytes_sent": r["bytes_sent"]})
-        state = s
-    set_state(node_id, state)
-    _remember_epoch(node_id, body.epoch)
+    with _node_lock(node_id):
+        results = []
+        state = None if _epoch_is_new(node_id, body.epoch) else get_state(node_id)
+        for s in body.states:
+            r = engine.evaluate(node_id, state, s)
+            up = len(_wire_bytes(s))
+            log_event(node_id, r["status"], r["bytes_full"], r["bytes_sent"],
+                      uplink_full=up, uplink_sent=up)
+            results.append({"status": r["status"], "bytes_full": r["bytes_full"],
+                            "bytes_sent": r["bytes_sent"]})
+            state = s
+        set_state(node_id, state)
+        _remember_epoch(node_id, body.epoch)
 
-    sent = sum(r["bytes_sent"] for r in results)
-    full = sum(r["bytes_full"] for r in results)
-    last = results[-1]
-    out = {
-        "node_id": node_id,
-        "accepted": len(results),
-        "results": results,
-        "bytes_full": full,
-        "bytes_sent": sent,
-        "saved_pct": round(100 * (1 - sent / full), 2) if full else 0.0,
-        "checksum": _hash(state),
-    }
-    advice = _advise_interval(node_id, last["status"], body.interval)
-    if advice:
-        out["polling"] = advice
-    return out
+        sent = sum(r["bytes_sent"] for r in results)
+        full = sum(r["bytes_full"] for r in results)
+        last = results[-1]
+        out = {
+            "node_id": node_id,
+            "accepted": len(results),
+            "results": results,
+            "bytes_full": full,
+            "bytes_sent": sent,
+            "saved_pct": round(100 * (1 - sent / full), 2) if full else 0.0,
+            "checksum": _hash(state),
+        }
+        advice = _advise_interval(node_id, last["status"], body.interval)
+        if advice:
+            out["polling"] = advice
+        return out
 
 
 @app.get("/api/license")
@@ -1350,11 +1295,6 @@ def get_metrics() -> dict:
 
 @app.get("/healthz")
 def healthz() -> dict:
-    # storage says what is actually holding node state right now, which is the
-    # thing an operator needs to know; redis_reachable is kept for anyone
-    # already parsing it. Reported from this ping rather than from
-    # storage_mode() alone, so a fresh process that has not served a sync yet
-    # does not claim "redis" while Redis is plainly down.
     reachable = ping()
     if reachable and not _degraded:
         mode = "redis"
@@ -1375,7 +1315,7 @@ def healthz() -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard() -> str:
-    return INDEX_HTML.replace("__PURCHASE_URL__", PURCHASE_URL)
+    return INDEX_HTML.replace("__TOTAL_EVENTS__", str(event_count())).replace("__BANDWIDTH_SAVED__", str(real_metrics().get("bandwidth_saved_pct", 0))).replace("__STORAGE__", storage_mode())
 
 
 @app.get("/manifest.json")
@@ -1385,8 +1325,6 @@ def manifest() -> Response:
 
 @app.get("/sw.js")
 def service_worker() -> Response:
-    # no-store on the worker itself: a browser that caches sw.js can never
-    # learn that the cache name changed, which defeats the whole mechanism.
     return Response(
         content=SW_JS.replace("__APP_VERSION__", app.version),
         media_type="application/javascript",
