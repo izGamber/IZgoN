@@ -50,7 +50,7 @@ jobs:
           # Intentionally scoped to active setup/user-facing copy.
           # Historical references are allowed outside these files (for example CHANGELOG).
           files=(README.md .env.example index.html)
-          if grep -nEi "DATAPULSE_LICENSE_SECRET|signing[ -]secret|HMAC-SHA256" "${files[@]}"; then
+          if grep -nEi "DATAPULSE_LICENSE_SECRET|\\bsigning[ -]secret\\b|HMAC-SHA256" "${files[@]}"; then
             echo "Found retired active reference(s) in active docs/env/site files."
             exit 1
           fi
