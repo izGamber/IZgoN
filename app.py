@@ -1,5 +1,5 @@
 """
-IzgoN - single-file deploy build (v1.1.1 - honest byte accounting: one compact
+IzgoN - single-file deploy build (v1.4.2 - honest byte accounting: one compact
 ruler on both sides of the comparison, and a delta is never sent when it would
 be bigger than the state it replaces).
 

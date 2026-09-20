@@ -1,0 +1,51 @@
+name: CI Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile Python sources
+        run: |
+          python - <<'PY'
+          import py_compile
+          import subprocess
+          import sys
+
+          files = subprocess.check_output(
+              ["git", "ls-files", "*.py"], text=True
+          ).splitlines()
+          failed = []
+          for f in files:
+              try:
+                  py_compile.compile(f, doraise=True)
+              except Exception as e:
+                  failed.append((f, str(e)))
+
+          if failed:
+              for f, e in failed:
+                  print(f"{f}: {e}")
+              sys.exit(1)
+          print(f"Compiled {len(files)} Python files.")
+          PY
+
+      - name: Guard active docs/env against retired licence references
+        run: |
+          if grep -nEi "DATAPULSE_LICENSE_SECRET|signing secret|HMAC-SHA256" README.md .env.example; then
+            echo "Found retired active reference(s) in README.md or .env.example."
+            exit 1
+          fi
+          echo "README.md and .env.example are clean."
