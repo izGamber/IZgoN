@@ -1,0 +1,61 @@
+name: CI Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile Python sources
+        run: |
+          python - <<'PY'
+          import py_compile
+          import subprocess
+          import sys
+
+          files = subprocess.check_output(
+              ["git", "ls-files", "*.py"], text=True
+          ).splitlines()
+          failed = []
+          for f in files:
+              try:
+                  py_compile.compile(f, doraise=True)
+              except Exception as e:
+                  failed.append((f, str(e)))
+
+          if failed:
+              for f, e in failed:
+                  print(f"{f}: {e}")
+              sys.exit(1)
+          print(f"Compiled {len(files)} Python files.")
+          PY
+
+      - name: Guard active docs/env against retired licence references
+        run: |
+          # Intentionally scoped to active setup/user-facing copy.
+          # Historical references are allowed outside these files (for example CHANGELOG).
+          files=(README.md .env.example index.html)
+          if grep -nEi "DATAPULSE_LICENSE_SECRET|\\bsigning[ -]secret\\b|HMAC-SHA256" "${files[@]}"; then
+            echo "Found retired active reference(s) in active docs/env/site files."
+            exit 1
+          fi
+          if ! grep -nE "^DATAPULSE_LICENSE_PUBKEY=" .env.example >/dev/null; then
+            echo "Expected DATAPULSE_LICENSE_PUBKEY in .env.example."
+            exit 1
+          fi
+          echo "Active docs/env/site files are clean."

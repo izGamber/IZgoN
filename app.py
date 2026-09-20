@@ -1,5 +1,5 @@
 """
-IzgoN - single-file deploy build (v1.1.1 - honest byte accounting: one compact
+IzgoN - single-file deploy build (v1.4.2 - honest byte accounting: one compact
 ruler on both sides of the comparison, and a delta is never sent when it would
 be bigger than the state it replaces).
 
@@ -707,7 +707,7 @@ def real_metrics() -> dict:
 # verified here with the matching PUBLIC key, which is the only half that ships.
 #
 # The previous scheme signed with HMAC and asked the buyer to put both the key
-# and the signing secret into their own .env. Anything the buyer holds, the
+# and the shared secret into their own .env. Anything the buyer holds, the
 # buyer can also generate: a matching pair took ten seconds to make with a
 # script that sat in the public repository. The gate stopped nobody.
 #

@@ -481,7 +481,7 @@ Read these before you put it on anything reachable from outside:
 - **`state` is bounded in depth and size** (32 levels, 1 MB) and both limits are
   checked before anything touches the payload. Without them a 1.8 KB body nested
   300 levels deep was enough to return a `500`.
-- **Your licence key and signing secret belong in `.env`, never in git.** The
+- **Your licence key belongs in `.env`, never in git.** The
   shipped `.gitignore` already excludes `.env`, `sales.log` and `*.db`.
 
 ## Limitations
@@ -511,5 +511,5 @@ Requires a reachable Redis.
 
 ## Status
 
-Version 1.1.1 — see [CHANGELOG.md](CHANGELOG.md). Built and maintained by one person.
+Version 1.4.2 — see [CHANGELOG.md](CHANGELOG.md). Built and maintained by one person.
 If something is broken, open an issue and say what you sent and what you got back.
