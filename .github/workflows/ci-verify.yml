@@ -47,8 +47,9 @@ jobs:
 
       - name: Guard active docs/env against retired licence references
         run: |
-          if grep -nEi "DATAPULSE_LICENSE_SECRET|signing[ -]secret|HMAC-SHA256" README.md .env.example index.html; then
-            echo "Found retired active reference(s) in README.md, .env.example, or index.html."
+          mapfile -t files < <(git ls-files '*.md' '*.html' '*.txt' '.env.example' | grep -v '^CHANGELOG.md$')
+          if grep -nEi "DATAPULSE_LICENSE_SECRET|signing[ -]secret|HMAC-SHA256" "${files[@]}"; then
+            echo "Found retired active reference(s) in active docs/env/site files."
             exit 1
           fi
-          echo "README.md, .env.example, and index.html are clean."
+          echo "Active docs/env/site files are clean."
