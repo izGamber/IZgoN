@@ -13,10 +13,22 @@ def fail(msg: str) -> None:
 
 
 def extract_lang_block(html: str, lang: str) -> str:
-    m = re.search(rf"\b{lang}:\s*\{{(.*?)\n\}},\n", html, re.S)
-    if not m:
+    marker = re.search(rf"\b{lang}:\s*\{{", html)
+    if not marker:
         fail(f"Missing translation block for language '{lang}'")
-    return m.group(1)
+    i = marker.end()
+    depth = 1
+    start = i
+    while i < len(html) and depth > 0:
+        ch = html[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        fail(f"Unbalanced braces in translation block for language '{lang}'")
+    return html[start : i - 1]
 
 
 def extract_keys(block: str) -> dict[str, str]:
@@ -69,12 +81,17 @@ def main() -> None:
         if key not in bs and key in en and not fallback_ok:
             fail(f"Key {key} relies on fallback but fallback is not explicit")
 
-    package_markers = ["29", "99", "299", "750", "49"]
-    for marker in package_markers:
-        if marker not in bs.get("pr_c1_price", "") + bs.get("pr_c2_price", "") + bs.get("pr_c3_price", "") + bs.get("pr_c4_desc", "") + bs.get("pr_c4_price", ""):
-            fail(f"Bosnian package pricing marker missing: {marker}")
-        if marker not in en.get("pr_c1_price", "") + en.get("pr_c2_price", "") + en.get("pr_c3_price", "") + en.get("pr_c4_desc", "") + en.get("pr_c4_price", ""):
-            fail(f"English package pricing marker missing: {marker}")
+    expected_price_fragments = {
+        "pr_c1_price": "29",
+        "pr_c2_price": "99",
+        "pr_c3_price": "299",
+        "pr_c4_price": "750",
+        "pr_c4_desc": "49",
+    }
+    for lang_name, translations in (("bs", bs), ("en", en)):
+        for key, fragment in expected_price_fragments.items():
+            if fragment not in translations.get(key, ""):
+                fail(f"{lang_name}.{key} must include pricing fragment '{fragment}'")
 
     stale_terms = ["HMAC-SHA256", "HMAC SHA256", "HMAC"]
     for term in stale_terms:

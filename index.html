@@ -1333,7 +1333,19 @@ function apply(lang){
   document.querySelectorAll("[data-i]").forEach(el=>{
     const k = el.getAttribute("data-i");
     const v = d[k] !== undefined ? d[k] : T.en[k];
-    if(v !== undefined) el.textContent = v;
+    if(v === undefined) return;
+    if (el instanceof HTMLInputElement) {
+      if (el.hasAttribute("placeholder")) el.placeholder = v;
+      else if (["button","submit","reset"].includes((el.type || "").toLowerCase())) el.value = v;
+      else el.setAttribute("aria-label", v);
+      return;
+    }
+    if (el instanceof HTMLTextAreaElement) {
+      if (el.hasAttribute("placeholder")) el.placeholder = v;
+      else el.setAttribute("aria-label", v);
+      return;
+    }
+    el.textContent = v;
   });
   const sel = document.getElementById("lang");
   if(sel) sel.value = lang;
