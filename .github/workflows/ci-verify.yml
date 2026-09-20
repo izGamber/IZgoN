@@ -47,8 +47,8 @@ jobs:
 
       - name: Guard active docs/env against retired licence references
         run: |
-          if grep -nEi "DATAPULSE_LICENSE_SECRET|signing[ -]secret|HMAC-SHA256" README.md .env.example index.html; then
-            echo "Found retired active reference(s) in README.md, .env.example, or index.html."
+          if grep -nEi "DATAPULSE_LICENSE_SECRET|signing[ -]secret|HMAC-SHA256" README.md .env.example index.html app.py; then
+            echo "Found retired active reference(s) in README.md, .env.example, index.html, or app.py."
             exit 1
           fi
-          echo "README.md, .env.example, and index.html are clean."
+          echo "README.md, .env.example, index.html, and app.py are clean."
