@@ -54,4 +54,8 @@ jobs:
             echo "Found retired active reference(s) in active docs/env/site files."
             exit 1
           fi
+          if ! grep -nE "^DATAPULSE_LICENSE_PUBKEY=" .env.example >/dev/null; then
+            echo "Expected DATAPULSE_LICENSE_PUBKEY in .env.example."
+            exit 1
+          fi
           echo "Active docs/env/site files are clean."
