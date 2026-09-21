@@ -1,0 +1,86 @@
+﻿apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: izgon
+  labels:
+    app: izgon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: izgon
+  template:
+    metadata:
+      labels:
+        app: izgon
+    spec:
+      containers:
+      - name: izgon
+        image: ghcr.io/izgamber/izgon:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: DATAPULSE_REDIS_URL
+          value: "redis://redis:6379/0"
+        - name: DATAPULSE_DB_PATH
+          value: "/data/datapulse_events.db"
+        - name: DATAPULSE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: izgon-secrets
+              key: api-key
+        - name: DATAPULSE_ALLOWED_ORIGINS
+          value: "*"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /api/license
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: izgon
+  labels:
+    app: izgon
+spec:
+  type: ClusterIP
+  selector:
+    app: izgon
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: izgon-secrets
+type: Opaque
+stringData:
+  api-key: "dev-local-key"
