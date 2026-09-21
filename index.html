@@ -1337,12 +1337,12 @@ function apply(lang){
     if (el instanceof HTMLInputElement) {
       if (el.hasAttribute("placeholder")) el.placeholder = v;
       else if (["button","submit","reset"].includes((el.type || "").toLowerCase())) el.value = v;
-      else el.setAttribute("aria-label", v);
+      else if (!(el.labels && el.labels.length)) el.setAttribute("aria-label", v);
       return;
     }
     if (el instanceof HTMLTextAreaElement) {
       if (el.hasAttribute("placeholder")) el.placeholder = v;
-      else el.setAttribute("aria-label", v);
+      else if (!(el.labels && el.labels.length)) el.setAttribute("aria-label", v);
       return;
     }
     el.textContent = v;

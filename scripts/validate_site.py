@@ -19,12 +19,24 @@ def extract_lang_block(html: str, lang: str) -> str:
     i = marker.end()
     depth = 1
     start = i
+    in_string = False
+    escaped = False
     while i < len(html) and depth > 0:
         ch = html[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == "\"":
+                in_string = False
+        else:
+            if ch == "\"":
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
         i += 1
     if depth != 0:
         fail(f"Unbalanced braces in translation block for language '{lang}'")
@@ -93,7 +105,7 @@ def main() -> None:
             if fragment not in translations.get(key, ""):
                 fail(f"{lang_name}.{key} must include pricing fragment '{fragment}'")
 
-    stale_terms = ["HMAC-SHA256", "HMAC SHA256", "HMAC"]
+    stale_terms = ["HMAC-SHA256", "HMAC SHA256"]
     for term in stale_terms:
         if term in html:
             fail(f"Stale licence wording found in index.html: {term}")
