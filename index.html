@@ -1345,6 +1345,10 @@ function apply(lang){
       else if (!(el.labels && el.labels.length)) el.setAttribute("aria-label", v);
       return;
     }
+    if (el instanceof HTMLOptionElement) {
+      el.textContent = v;
+      return;
+    }
     el.textContent = v;
   });
   const sel = document.getElementById("lang");

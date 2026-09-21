@@ -105,16 +105,23 @@ def main() -> None:
             if fragment not in translations.get(key, ""):
                 fail(f"{lang_name}.{key} must include pricing fragment '{fragment}'")
 
-    stale_terms = ["HMAC-SHA256", "HMAC SHA256"]
-    for term in stale_terms:
-        if term in html:
-            fail(f"Stale licence wording found in index.html: {term}")
+    stale_terms = ("HMAC-SHA256", "HMAC SHA256")
+    for lang in ("bs", "en", "de", "fr", "ja", "zh"):
+        translations = extract_keys(extract_lang_block(html, lang))
+        for key in ("c2p", "how_stack"):
+            value = translations.get(key, "")
+            for term in stale_terms:
+                if term in value:
+                    fail(f"Stale licence wording found in {lang}.{key}: {term}")
 
     for lang_name, translations in (("bs", bs), ("en", en)):
         for key in ("c2p", "how_stack"):
             val = translations.get(key, "")
             if "Ed25519" not in val:
-                fail(f"{lang_name}.{key} must reference Ed25519/local verification")
+                fail(f"{lang_name}.{key} must reference Ed25519")
+            local_terms = ("lokalno", "locally")
+            if not any(term in val.lower() for term in local_terms):
+                fail(f"{lang_name}.{key} must mention local verification")
 
     print("OK: site validation checks passed")
 
