@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>izGon AI — Persistent Memory for Your AI Agent</title>
+<meta name="description" content="izGon AI gives your AI agent persistent memory. Remember conversations, store facts, snapshot and restore state. Self-hosted, Docker-ready.">
+<meta property="og:title" content="izGon AI — Persistent Memory for Your AI Agent">
+<meta property="og:description" content="Self-hosted AI memory system. Remember conversations, store facts, snapshot and restore state. Local API, Docker deployment.">
+<meta property="og:type" content="website">
+<link rel="icon" href="https://izgon-api.onrender.com/icon-192.png">
+<style>
+  :root{
+    --bg:#05060b; --bg2:#0a0d18; --card:rgba(18,22,38,.55); --line:rgba(120,170,255,.16);
+    --fg:#eef4ff; --mut:#8fa0c4; --cy:#37e6ff; --vi:#a78bfa; --mg:#ff5fd8; --gr:#34ffb0; --am:#ffb454;
+    --mono:'SFMono-Regular',ui-monospace,Menlo,Consolas,'Liberation Mono',monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,'Helvetica Neue',Arial,sans-serif;
+  }
+  :root[data-theme="light"]{
+    --bg:#fbfcfe; --bg2:#f2f5fa; --card:#fff; --line:#dde5f2;
+    --fg:#0d1220; --mut:#5a6a86; --cy:#0891b2; --vi:#7c3aed; --mg:#c026d3; --gr:#059669; --am:#b45309;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.65;
+       -webkit-font-smoothing:antialiased;overflow-x:hidden}
+  a{color:inherit}
+  .wrap{max-width:920px;margin:0 auto;padding-inline:20px}
+
+  /* backdrop */
+  .orbs{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
+  .orb{position:absolute;width:58vmax;height:58vmax;border-radius:50%;filter:blur(90px);
+       opacity:.30;mix-blend-mode:screen;animation:drift 26s ease-in-out infinite alternate}
+  :root[data-theme="light"] .orb{opacity:.16;mix-blend-mode:normal}
+  .orb.a{background:radial-gradient(circle,var(--cy),transparent 65%);top:-22%;left:-18%}
+  .orb.b{background:radial-gradient(circle,var(--vi),transparent 65%);bottom:-28%;right:-14%;animation-duration:32s;animation-delay:-7s}
+  @keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(5%,-4%) scale(1.12)}}
+  @media (prefers-reduced-motion:reduce){.orb{animation:none}}
+
+  /* top bar */
+  header.bar{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+    background:color-mix(in srgb,var(--bg) 82%,transparent);border-bottom:1px solid var(--line)}
+  .bar .wrap{display:flex;align-items:center;gap:14px;height:60px}
+  .logo{font-weight:800;letter-spacing:.5px;font-size:19px;
+    background:linear-gradient(100deg,var(--cy),var(--vi) 55%,var(--mg));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .bar nav{margin-inline-start:auto;display:flex;align-items:center;gap:8px}
+  .bar nav a.navlink{font-size:13px;color:var(--mut);text-decoration:none;padding:6px 9px;border-radius:8px}
+  .bar nav a.navlink:hover{color:var(--fg);background:var(--card)}
+  select,.iconbtn{background:var(--card);color:var(--fg);border:1px solid var(--line);
+    border-radius:9px;padding:6px 9px;font:inherit;font-size:13px;cursor:pointer}
+
+  /* hero */
+  .hero{padding:70px 0 46px}
+  h1{font-size:clamp(30px,5.4vw,50px);line-height:1.1;letter-spacing:-.02em;font-weight:800}
+  h1 em{font-style:normal;background:linear-gradient(100deg,var(--cy),var(--vi) 60%,var(--mg));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{color:var(--mut);font-size:clamp(15px,2.1vw,18px);margin-top:18px;max-width:64ch}
+  .cta{display:flex;flex-wrap:wrap;gap:11px;margin-top:28px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:12px;
+    text-decoration:none;font-weight:650;font-size:14.5px;border:1px solid var(--line);
+    background:var(--card);color:var(--fg);transition:transform .15s,border-color .15s}
+  .btn:hover{transform:translateY(-1px);border-color:var(--cy)}
+  .btn.primary{background:linear-gradient(100deg,var(--cy),var(--vi));border:none;color:#05060b}
+  :root[data-theme="light"] .btn.primary{color:#fff}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .sub{font-size:12.5px;color:var(--mut);margin-top:12px}
+
+  /* stats */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-top:42px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:18px 20px}
+  .stat b{display:block;font-family:var(--mono);font-size:30px;letter-spacing:-.02em;line-height:1.1}
+  .stat.good b{color:var(--gr)} .stat.warn b{color:var(--am)}
+  .stat span{display:block;font-size:12.5px;color:var(--mut);margin-top:7px}
+
+  /* sections */
+  section{padding:44px 0;border-top:1px solid var(--line)}
+  h2{font-size:clamp(21px,3.2vw,27px);letter-spacing:-.01em;font-weight:750;margin-bottom:8px}
+  h3{font-size:16px;font-weight:700;margin:22px 0 8px}
+  p{color:var(--mut);max-width:70ch}
+  p+p{margin-top:12px}
+  ul{color:var(--mut);margin:12px 0 0 20px;max-width:70ch}
+  li{margin-bottom:7px}
+  strong{color:var(--fg);font-weight:650}
+  pre{background:var(--bg2);border:1px solid var(--line);border-radius:13px;padding:15px 17px;
+    overflow-x:auto;margin-top:14px}
+  code{font-family:var(--mono);font-size:13px;color:var(--fg)}
+  p code,li code{background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:12.5px}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:14px;margin-top:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:20px}
+  .card h3{margin-top:0}
+  .card p{font-size:14px}
+  .num{font-family:var(--mono);font-size:12px;color:var(--cy);letter-spacing:.08em;text-transform:uppercase}
+
+  .note{border:1px solid var(--am);background:color-mix(in srgb,var(--am) 9%,transparent);
+    border-radius:13px;padding:15px 18px;margin-top:20px;font-size:14px;color:var(--fg)}
+  .note b{color:var(--am)}
+
+  .linkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:11px;margin-top:18px}
+  .lk{display:block;background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px;text-decoration:none;transition:border-color .15s,transform .15s}
+  .lk:hover{border-color:var(--cy);transform:translateY(-1px)}
+  .lk b{display:block;font-size:14px;color:var(--fg)}
+  .lk span{display:block;font-size:12px;color:var(--mut);margin-top:3px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  footer{border-top:1px solid var(--line);padding:34px 0 60px;font-size:13px;color:var(--mut)}
+  footer a{color:var(--cy);text-decoration:none}
+  footer a:hover{text-decoration:underline}
+  .foot-links{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px}
+</style>
+</head>
+<body>
+<div class="orbs"><div class="orb a"></div><div class="orb b"></div></div>
+
+<header class="bar">
+  <div class="wrap">
+    <a href="../" style="text-decoration:none; text-decoration-color: transparent;"><span class="logo">izGon AI</span></a>
+    <nav>
+      <a class="navlink" href="#features">Features</a>
+      <a class="navlink" href="#install">Install</a>
+      <a class="navlink" href="#pricing">Pricing</a>
+      <a class="navlink" href="#api">API</a>
+      <button class="iconbtn" id="theme" aria-label="Theme">◐</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <h1>Give your AI agent a <em>persistent memory</em></h1>
+    <p class="lede">izGon AI stores conversations, facts, and state snapshots. Your agent remembers across sessions, learns from context, and can rewind to saved points. Self-hosted, Docker-ready, no cloud vendor lock-in.</p>
+
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/izGamber/izGon-AI">View on GitHub</a>
+      <a class="btn" href="http://localhost:8001">Local Dashboard</a>
+      <a class="btn" href="#install">Quick Start</a>
+    </div>
+    <p class="sub">$20 USD, one-time. Or free tier with 100 memories.</p>
+
+    <div class="stats">
+      <div class="stat good"><b>Persistent</b><span>Memories survive restarts</span></div>
+      <div class="stat"><b>Snapshot</b><span>Save and restore full state</span></div>
+      <div class="stat"><b>Search</b><span>Query memories by keywords</span></div>
+      <div class="stat"><b>Local</b><span>Runs on your server</span></div>
+    </div>
+  </div>
+
+  <section id="what"><div class="wrap">
+    <h2>What it does</h2>
+    <p>izGon AI is a self-hosted memory backend for AI agents. It remembers:</p>
+    <ul>
+      <li><strong>Memories:</strong> Store facts, user preferences, decision rules, and context your agent should retain.</li>
+      <li><strong>Activities:</strong> Log every action the agent took — useful for audit, debugging, and learning.</li>
+      <li><strong>Projects:</strong> Organize memories and activities by scope (customer, use-case, context).</li>
+      <li><strong>Snapshots:</strong> Save a complete snapshot of the agent's memory at any point. Restore it later to "rewind" the agent's state.</li>
+    </ul>
+    <p>Unlike stateless LLMs, your agent now has continuity. It learns from past interactions and can reflect on them.</p>
+  </div></section>
+
+  <section id="features"><div class="wrap">
+    <h2>Key Features</h2>
+    <div class="cards">
+      <div class="card"><div class="num">01</div><h3>REST API</h3><p>Store, search, and forget memories via simple HTTP endpoints. No SDK needed — just JSON.</p></div>
+      <div class="card"><div class="num">02</div><h3>Full-Text Search</h3><p>Query memories by keywords. Find facts, context, and past decisions instantly.</p></div>
+      <div class="card"><div class="num">03</div><h3>Snapshots</h3><p>Capture the entire memory state and restore it later. Rewind your agent to any saved point.</p></div>
+      <div class="card"><div class="num">04</div><h3>Dashboard</h3><p>Visual interface to manage memories, view activity logs, and inspect state. No terminal required.</p></div>
+    </div>
+  </div></section>
+
+  <section id="why"><div class="wrap">
+    <h2>Why This Matters</h2>
+    <p>LLMs are stateless — they have no memory between conversations. Your agent must either:</p>
+    <ul>
+      <li>Compress all context into a system prompt (expensive and lossy).</li>
+      <li>Fetch context from a database on every call (slow and complex).</li>
+      <li>Run with no memory of the past (agent learns nothing, repeats mistakes).</li>
+    </ul>
+    <p>izGon AI lets you do none of those. Your agent has a proper memory system. It stores what matters, recalls it when needed, and can reset to a known-good state on demand.</p>
+  </div></section>
+
+  <section id="api"><div class="wrap">
+    <h2>API Overview</h2>
+    <p>All endpoints are self-documenting via FastAPI's interactive docs.</p>
+    <h3>Memories</h3>
+    <ul>
+      <li><code>POST /api/brain/remember</code> — Store a memory (fact, context, rule).</li>
+      <li><code>GET /api/brain/memories</code> — List all memories, optionally paginated.</li>
+      <li><code>GET /api/brain/search</code> — Search memories by keywords.</li>
+      <li><code>PATCH /api/brain/importance/{id}</code> — Update memory importance (0–10).</li>
+      <li><code>DELETE /api/brain/forget/{id}</code> — Delete a memory.</li>
+    </ul>
+    <h3>State</h3>
+    <ul>
+      <li><code>GET /api/brain/stats</code> — Memory count, total size, last updated.</li>
+      <li><code>POST /api/brain/snapshot</code> — Save a complete snapshot of all memories.</li>
+      <li><code>GET /api/brain/snapshots</code> — List saved snapshots.</li>
+      <li><code>POST /api/brain/snapshot/{id}</code> — Restore a snapshot.</li>
+    </ul>
+    <h3>Dashboard</h3>
+    <ul>
+      <li><code>GET /</code> — Web dashboard. Real-time updates via WebSocket.</li>
+    </ul>
+  </div></section>
+
+  <section id="tech"><div class="wrap">
+    <h2>Tech Stack</h2>
+    <ul>
+      <li><strong>Backend:</strong> FastAPI (async, type-safe).</li>
+      <li><strong>Storage:</strong> SQLite (self-contained, no external DB).</li>
+      <li><strong>Frontend:</strong> Plain HTML/JS dashboard with Socket.IO for real-time updates.</li>
+      <li><strong>Deployment:</strong> Docker image available on GitHub Packages.</li>
+    </ul>
+    <p>No cloud services required. Everything runs on your server.</p>
+  </div></section>
+
+  <section id="install"><div class="wrap">
+    <h2>Quick Start</h2>
+    
+    <h3>Docker Compose (Recommended)</h3>
+    <pre><code>git clone https://github.com/izGamber/izGon-AI.git
+cd izGon-AI
+docker compose up -d</code></pre>
+    <p>Dashboard: <code>http://localhost:8001</code></p>
+
+    <h3>Single Container</h3>
+    <pre><code>docker run -p 8001:8000 \
+  -e DATABASE_URL="sqlite:///./data/memory.db" \
+  ghcr.io/izgamber/izgon-ai:latest</code></pre>
+
+    <h3>Local (Python)</h3>
+    <pre><code>pip install -r requirements.txt
+python -m uvicorn app.dashboard:app --host 0.0.0.0 --port 8001</code></pre>
+
+    <h3>First Memory</h3>
+    <pre><code>curl -X POST http://localhost:8001/api/brain/remember \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "The user prefers concise, actionable summaries.",
+    "tags": ["user_preference", "communication"],
+    "importance": 8
+  }'</code></pre>
+
+    <h3>Search</h3>
+    <pre><code>curl http://localhost:8001/api/brain/search?q=user%20preference</code></pre>
+  </div></section>
+
+  <section id="examples"><div class="wrap">
+    <h2>Use Cases</h2>
+    <ul>
+      <li><strong>Customer Support Agent:</strong> Remember customer name, past issues, preferences, and resolution patterns. Deliver personalized, informed support without reading logs each time.</li>
+      <li><strong>Research Agent:</strong> Store discovered facts, sources, hypotheses, and conclusions. Build a knowledge graph across sessions.</li>
+      <li><strong>Code Review Agent:</strong> Remember project conventions, common bugs, and approved patterns. Enforce consistency across reviews.</li>
+      <li><strong>Tutoring Agent:</strong> Track student progress, misconceptions, learning pace, and mastered topics. Tailor explanations over time.</li>
+      <li><strong>Planning Agent:</strong> Store goals, constraints, milestones, and blockers. Revisit and refine the plan across iterations.</li>
+    </ul>
+  </div></section>
+
+  <section id="pricing"><div class="wrap">
+    <h2>Pricing</h2>
+    <p><strong>Free Tier:</strong> Up to 100 memories. No key required. Perfect for evaluation.</p>
+    <p><strong>Commercial:</strong> $20 USD, one-time purchase. Unlimited memories. Self-hosted, no subscription.</p>
+    <p>The code is public before and after you pay. You are buying the right to run it commercially past the free limit.</p>
+    
+    <div class="cta" style="margin-top:20px">
+      <a class="btn primary" href="https://github.com/izGamber/izGon-AI/issues/new?title=License%20request&body=I%20would%20like%20a%20commercial%20izGon%20AI%20license%20(%2420).">Request a License</a>
+      <a class="btn" href="https://github.com/izGamber/izGon-AI">View on GitHub</a>
+    </div>
+  </div></section>
+
+  <section id="links"><div class="wrap">
+    <h2>Resources</h2>
+    <div class="linkgrid">
+      <a class="lk" href="https://github.com/izGamber/izGon-AI"><b>GitHub Repository</b><span>github.com/izGamber/izGon-AI</span></a>
+      <a class="lk" href="https://github.com/izGamber/izGon-AI/blob/main/README.md"><b>Full Documentation</b><span>README.md</span></a>
+      <a class="lk" href="https://github.com/izGamber/izGon-AI/pkgs/container/izgon-ai"><b>Docker Image</b><span>ghcr.io/izgamber/izgon-ai</span></a>
+      <a class="lk" href="http://localhost:8001/docs"><b>API Docs</b><span>Interactive Swagger UI</span></a>
+    </div>
+  </div></section>
+
+  <section id="back"><div class="wrap">
+    <p style="text-align:center; margin:20px 0">
+      ← <a href="../">Back to IzgoN (Delta-Sync Server)</a>
+    </p>
+  </div></section>
+</main>
+
+<footer><div class="wrap">
+  <div class="foot-links">
+    <a href="https://github.com/izGamber/izGon-AI">GitHub</a>
+    <a href="http://localhost:8001">Dashboard</a>
+    <a href="https://github.com/izGamber/izGon-AI#quick-start">Quick Start</a>
+  </div>
+  <p>izGon AI — persistent memory for your agent. Self-hosted, $20 USD one-time.</p>
+  <p style="margin-top:10px">© 2026 Adnan Drndić · <a href="https://github.com/izGamber/izGon-AI/blob/main/LICENSE.md">License</a></p>
+</div></footer>
+
+<script>
+const themeBtn = document.getElementById("theme");
+function setTheme(t){
+  document.documentElement.setAttribute("data-theme", t);
+  try{ localStorage.setItem("izgon-ai-theme", t); }catch(e){}
+}
+themeBtn.addEventListener("click", ()=>{
+  setTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark");
+});
+(function(){
+  let t = null;
+  try{ t = localStorage.getItem("izgon-ai-theme"); }catch(e){}
+  if(!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  setTheme(t);
+})();
+</script>
+</body>
+</html>
