@@ -1338,12 +1338,10 @@ function apply(lang){
       if (el.hasAttribute("placeholder")) el.placeholder = v;
       else if (["button","submit","reset"].includes((el.type || "").toLowerCase())) el.value = v;
       else if (!(el.labels && el.labels.length)) el.setAttribute("aria-label", v);
-      return;
     }
     if (el instanceof HTMLTextAreaElement) {
       if (el.hasAttribute("placeholder")) el.placeholder = v;
       else if (!(el.labels && el.labels.length)) el.setAttribute("aria-label", v);
-      return;
     }
     if (el instanceof HTMLOptionElement) {
       el.textContent = v;
@@ -1572,11 +1570,13 @@ function calc(){
 try{calc();}catch(e){}
 const cPkg = document.getElementById('cPkg');
 if (cPkg) {
-  cPkg.addEventListener('change', function(){
+  const syncPackagePrice = function(){
     const cLic = document.getElementById('cLic');
-    if (cLic) cLic.value = this.value;
+    if (cLic) cLic.value = cPkg.value;
     calc();
-  });
+  };
+  cPkg.addEventListener('change', syncPackagePrice);
+  syncPackagePrice();
 }
 </script>
 </body>
