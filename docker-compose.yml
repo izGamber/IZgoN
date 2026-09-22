@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   redis:
     image: redis:7-alpine
@@ -12,7 +14,8 @@ services:
     restart: unless-stopped
 
   izgon:
-    build: .
+    # Use pre-built image from GitHub Packages
+    image: ghcr.io/izgamber/izgon:latest
     ports:
       - "8000:8000"
     environment:
@@ -28,16 +31,15 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # ProxyHandler({}) ignores any http_proxy inherited from the host — without
-      # it, a machine behind a corporate proxy reports this container unhealthy
-      # forever even though the service is fine.
       test: ["CMD", "python", "-c", "import urllib.request,sys; o=urllib.request.build_opener(urllib.request.ProxyHandler({})); sys.exit(0 if o.open('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"]
-      interval: 15s
       timeout: 5s
+      interval: 15s
       retries: 5
       start_period: 10s
     restart: unless-stopped
 
 volumes:
-  redis-data:
   izgon-data:
+    driver: local
+  redis-data:
+    driver: local
